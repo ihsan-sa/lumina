@@ -34,18 +34,19 @@ from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
     Color,
+    energy_brightness,
     lerp_color,
     sine_pulse,
 )
 
-# ─── Psychedelic R&B palette ─────────────────────────────────────────
+# ─── Psychedelic R&B palette (max RGB channel = 1.0 for brightness) ──
 
-DEEP_PURPLE = Color(0.4, 0.0, 0.8, 0.0)
-NEON_CYAN = Color(0.0, 0.8, 0.9, 0.0)
-HOT_MAGENTA = Color(0.9, 0.0, 0.6, 0.0)
+DEEP_PURPLE = Color(0.5, 0.0, 1.0, 0.0)
+NEON_CYAN = Color(0.0, 0.89, 1.0, 0.0)
+HOT_MAGENTA = Color(1.0, 0.0, 0.67, 0.0)
 HOT_PINK = Color(1.0, 0.1, 0.4, 0.0)
 NEON_BLUE = Color(0.1, 0.2, 1.0, 0.0)
-DARK_VIOLET = Color(0.25, 0.0, 0.5, 0.0)
+DARK_VIOLET = Color(0.5, 0.0, 1.0, 0.0)
 
 # Wash color sets (drifts between these)
 _VERSE_COLORS = [DEEP_PURPLE, NEON_CYAN, NEON_BLUE]
@@ -57,12 +58,12 @@ _UV_CHORUS = 150
 _UV_DROP = 200
 _UV_BREAKDOWN = 50
 
-# Intensity ranges
-_VERSE_MIN = 0.10
-_VERSE_MAX = 0.45
-_CHORUS_KICK_PULSE = 0.35  # 30-40% pulse on top of wash
-_BREAKDOWN_INTENSITY = 0.08
-_DROP_PEAK = 0.85
+# Intensity ranges (raised floors: verse 25%+, chorus 50%+, drop 80%+)
+_VERSE_MIN = 0.30
+_VERSE_MAX = 0.60
+_CHORUS_KICK_PULSE = 0.25  # pulse on top of already-bright wash
+_BREAKDOWN_INTENSITY = 0.12
+_DROP_PEAK = 0.95
 
 
 class PsychRnbProfile(BaseProfile):
@@ -125,14 +126,15 @@ class PsychRnbProfile(BaseProfile):
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Base intensity from vocal energy
+        # Base intensity from vocal energy, boosted by energy curve
         vocal = max(0.0, min(1.0, state.vocal_energy))
-        base_intensity = _VERSE_MIN + vocal * (_VERSE_MAX - _VERSE_MIN)
+        eb = energy_brightness(state.energy)
+        base_intensity = _VERSE_MIN + max(vocal, eb) * (_VERSE_MAX - _VERSE_MIN)
 
         # Swell: if energy is rising, expand from center
         if state.energy_derivative > 0.05:
             swell_boost = min(0.15, state.energy_derivative * 0.5)
-            base_intensity = min(0.6, base_intensity + swell_boost)
+            base_intensity = min(0.75, base_intensity + swell_boost)
             swell_cmds = self._focus_expand(
                 min(1.0, state.energy * 1.2),
                 self._wash_color(state.timestamp, _VERSE_COLORS, 0.0),
@@ -166,7 +168,8 @@ class PsychRnbProfile(BaseProfile):
         commands: dict[int, FixtureCommand] = {}
 
         vocal = max(0.0, min(1.0, state.vocal_energy))
-        base_intensity = _VERSE_MIN + vocal * (_VERSE_MAX - _VERSE_MIN) + 0.1
+        eb = energy_brightness(state.energy)
+        base_intensity = max(0.50, _VERSE_MIN + max(vocal, eb) * (_VERSE_MAX - _VERSE_MIN) + 0.15)
 
         # Kick pulse: smooth bump
         kick_boost = 0.0
@@ -244,7 +247,7 @@ class PsychRnbProfile(BaseProfile):
         commands: dict[int, FixtureCommand] = {}
 
         breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = _BREAKDOWN_INTENSITY + breath * 0.10
+        intensity = _BREAKDOWN_INTENSITY + breath * 0.08
 
         # Only first two pars, low purple
         for i, f in enumerate(self._pars):
@@ -268,7 +271,7 @@ class PsychRnbProfile(BaseProfile):
         commands: dict[int, FixtureCommand] = {}
 
         breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = 0.06 + breath * 0.08
+        intensity = 0.25 + breath * 0.10
 
         for f in self._pars:
             commands[f.fixture_id] = self._cmd(f, DEEP_PURPLE, intensity=intensity)

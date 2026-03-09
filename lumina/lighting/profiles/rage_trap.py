@@ -74,12 +74,12 @@ _KICK_STROBE_INTENSITY = 220
 _UV_VERSE = 80  # Low ambient glow
 _UV_OFF = 0
 
-# Breakdown breathing
-_BREAKDOWN_MIN_INTENSITY = 0.05
-_BREAKDOWN_MAX_INTENSITY = 0.4
+# Breakdown breathing (10-20% range per spec)
+_BREAKDOWN_MIN_INTENSITY = 0.10
+_BREAKDOWN_MAX_INTENSITY = 0.20
 
 # Choir / calm section
-_CHOIR_INTENSITY = 0.15
+_CHOIR_INTENSITY = 0.30
 _CHOIR_NUM_PARS = 2
 
 # Verse evolution
@@ -212,9 +212,9 @@ class RageTrapProfile(BaseProfile):
                 )
 
         # Pars: pulsing red at increasing intensity
-        par_intensity = 0.1 + ramp * 0.5
+        par_intensity = 0.30 + ramp * 0.50
         if state.is_beat:
-            par_intensity = min(1.0, par_intensity + 0.3)
+            par_intensity = min(1.0, par_intensity + 0.2)
         for f in self._pars:
             commands[f.fixture_id] = self._cmd(f, BLOOD_RED, intensity=par_intensity)
 
@@ -301,7 +301,7 @@ class RageTrapProfile(BaseProfile):
 
         for i, f in enumerate(self._pars):
             if i == 0:
-                commands[f.fixture_id] = self._cmd(f, DEEP_RED, intensity=0.2)
+                commands[f.fixture_id] = self._cmd(f, DEEP_RED, intensity=0.30)
             else:
                 commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
 
@@ -411,7 +411,7 @@ class RageTrapProfile(BaseProfile):
                 state.bar_phase,
                 verse_color,
                 width=0.4,
-                intensity=0.8 * breathe,
+                intensity=0.85 * breathe,
             )
             commands.update(chase)
             # Black out inactive pars
@@ -421,11 +421,11 @@ class RageTrapProfile(BaseProfile):
             for f in self._strobes:
                 commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
         else:
-            # Between beats: near-darkness (not dim, just a hair above black)
-            near_dark = 0.02 * breathe
+            # Between beats: near-dark glow (rage_trap = binary contrast)
+            base_glow = 0.05 * breathe
             for i, f in enumerate(self._pars):
                 if i < active_pars:
-                    commands[f.fixture_id] = self._cmd(f, verse_color, intensity=near_dark)
+                    commands[f.fixture_id] = self._cmd(f, verse_color, intensity=base_glow)
                 else:
                     commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
             for f in self._strobes:

@@ -33,6 +33,7 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     Color,
     color_from_hsv,
+    energy_brightness,
     lerp_color,
     sine_pulse,
 )
@@ -40,28 +41,28 @@ from lumina.lighting.profiles.base import (
 # ─── Festival palette ────────────────────────────────────────────────
 
 # Cool end (build starts here)
-ICE_BLUE = Color(0.0, 0.3, 1.0, 0.0)
-CYAN = Color(0.0, 0.8, 1.0, 0.0)
-DEEP_BLUE = Color(0.0, 0.0, 0.8, 0.0)
+ICE_BLUE = Color(0.0, 0.3, 1.0, 0.1)
+CYAN = Color(0.0, 0.8, 1.0, 0.1)
+DEEP_BLUE = Color(0.0, 0.0, 1.0, 0.0)
 
 # Warm end (build peaks here)
-GOLD = Color(1.0, 0.75, 0.0, 0.3)
+GOLD = Color(1.0, 0.75, 0.0, 0.4)
 HOT_WHITE = Color(1.0, 0.9, 0.7, 1.0)
-AMBER = Color(1.0, 0.5, 0.0, 0.1)
+AMBER = Color(1.0, 0.5, 0.0, 0.2)
 
 # Drop cycling palette (high saturation, full value)
 _DROP_HUES = [0.0, 0.08, 0.15, 0.55, 0.65, 0.75, 0.85]
 
-# Groove palette (warm club colors, 4-bar cycle)
+# Groove palette (warm club colors, 4-bar cycle — white at 30-40%)
 _GROOVE_COLORS = [
-    Color(1.0, 0.2, 0.0, 0.1),   # warm red-orange
-    Color(0.9, 0.6, 0.0, 0.2),   # amber-gold
-    Color(0.0, 0.5, 1.0, 0.1),   # electric blue
-    Color(0.6, 0.0, 1.0, 0.1),   # purple
+    Color(1.0, 0.2, 0.0, 0.35),   # warm red-orange
+    Color(1.0, 0.67, 0.0, 0.40),  # amber-gold
+    Color(0.0, 0.5, 1.0, 0.30),   # electric blue
+    Color(0.6, 0.0, 1.0, 0.30),   # purple
 ]
 
-# Breakdown
-BREAKDOWN_BLUE = Color(0.0, 0.15, 0.6, 0.0)
+# Breakdown (max channel at 1.0 for blue)
+BREAKDOWN_BLUE = Color(0.0, 0.25, 1.0, 0.0)
 
 # UV levels
 _UV_BUILD_BASE = 40
@@ -168,8 +169,8 @@ class FestivalEdmProfile(BaseProfile):
         # Color: cool blue → warm gold
         color = lerp_color(ICE_BLUE, GOLD, ramp)
 
-        # Intensity: 0.1 → 0.9
-        intensity = 0.1 + ramp * 0.8
+        # Intensity: 0.30 → 1.0
+        intensity = 0.30 + ramp * 0.70
 
         # Pars: fade in one by one over the build
         n_pars = len(self._pars_lr)
@@ -240,12 +241,14 @@ class FestivalEdmProfile(BaseProfile):
             commands.update(expand)
         else:
             # EDM: rapid color cycling — each par gets a different hue
+            # White at 40% adds perceived brightness during drops
             cycle_speed = state.timestamp * 4.0  # 4 full cycles per second
             n_pars = len(self._pars_lr)
             for i, f in enumerate(self._pars_lr):
                 hue_offset = i / max(n_pars, 1)
                 hue = (cycle_speed + hue_offset) % 1.0
                 color = color_from_hsv(hue, 1.0, 1.0)
+                color = Color(color.r, color.g, color.b, w=0.40)
                 commands[f.fixture_id] = self._cmd(f, color, intensity=1.0)
 
         # Strobes: continuous max
@@ -280,11 +283,11 @@ class FestivalEdmProfile(BaseProfile):
         blend_t = (cycle_pos * n_colors) % 1.0
         groove_color = lerp_color(_GROOVE_COLORS[color_idx], _GROOVE_COLORS[next_idx], blend_t)
 
-        # Pars: sweep L→R on beat phase
-        base_intensity = 0.4 + state.energy * 0.4
+        # Pars: sweep L→R on beat phase (min 50% in groove)
+        base_intensity = 0.50 + energy_brightness(state.energy) * 0.35
         # Kick pulse: brief brightness boost
         if state.onset_type == "kick":
-            base_intensity = min(1.0, base_intensity + 0.3)
+            base_intensity = min(1.0, base_intensity + 0.15)
 
         sweep = self._sweep_x(
             state.beat_phase, groove_color, width=0.4, intensity=base_intensity,
@@ -320,9 +323,9 @@ class FestivalEdmProfile(BaseProfile):
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Breathing intensity on bar phase
+        # Breathing intensity on bar phase (10-20% range)
         breath = sine_pulse(state.bar_phase)
-        intensity = 0.05 + breath * 0.25
+        intensity = 0.10 + breath * 0.12
 
         # Only the first par
         for i, f in enumerate(self._pars):
@@ -346,7 +349,7 @@ class FestivalEdmProfile(BaseProfile):
         commands: dict[int, FixtureCommand] = {}
 
         breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = 0.1 + breath * 0.15
+        intensity = 0.25 + breath * 0.15
 
         for f in self._pars:
             commands[f.fixture_id] = self._cmd(f, DEEP_BLUE, intensity=intensity)

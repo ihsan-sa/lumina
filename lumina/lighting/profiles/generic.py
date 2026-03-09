@@ -33,16 +33,17 @@ from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
     Color,
+    energy_brightness,
     lerp_color,
     sine_pulse,
 )
 
-# ─── Generic palette (universally pleasing) ──────────────────────────
+# ─── Generic palette (max RGB channel = 1.0, white at 15-40%) ───────
 
-SOFT_BLUE = Color(0.1, 0.2, 0.8, 0.1)
-WARM_PURPLE = Color(0.4, 0.1, 0.7, 0.1)
-WARM_WHITE = Color(0.8, 0.6, 0.4, 0.4)
-GENTLE_CYAN = Color(0.1, 0.5, 0.7, 0.1)
+SOFT_BLUE = Color(0.12, 0.25, 1.0, 0.15)
+WARM_PURPLE = Color(0.57, 0.14, 1.0, 0.15)
+WARM_WHITE = Color(0.8, 0.6, 0.4, 0.50)
+GENTLE_CYAN = Color(0.14, 0.71, 1.0, 0.15)
 
 # 8-bar color cycle
 _CYCLE_COLORS = [SOFT_BLUE, WARM_PURPLE, WARM_WHITE, GENTLE_CYAN]
@@ -124,8 +125,9 @@ class GenericProfile(BaseProfile):
         # Section modifier
         section_mult = _SECTION_INTENSITY.get(state.segment, 0.6)
 
-        # Base intensity from energy
-        base_intensity = (0.2 + state.energy * 0.6) * section_mult
+        # Base intensity from energy (boosted curve, floor 25% verse / 50% chorus)
+        eb = energy_brightness(state.energy)
+        base_intensity = (0.25 + eb * 0.55) * section_mult
 
         # Kick pulse
         kick_boost = 0.0
@@ -139,9 +141,11 @@ class GenericProfile(BaseProfile):
 
         # Pars: sweep during verse, full fill during chorus
         if state.segment == "chorus":
+            # White at 30% during chorus for brightness
+            chorus_color = Color(color.r, color.g, color.b, w=max(color.w, 0.30))
             for f in self._pars:
                 intensity = min(1.0, base_intensity + kick_boost)
-                commands[f.fixture_id] = self._cmd(f, color, intensity)
+                commands[f.fixture_id] = self._cmd(f, chorus_color, intensity)
         else:
             # Slow L→R sweep
             sweep = self._sweep_x(
@@ -173,15 +177,18 @@ class GenericProfile(BaseProfile):
         return self._merge_commands(commands)
 
     def _drop(self, state: MusicState) -> list[FixtureCommand]:
-        """Drop: brighter version of reactive with UV boost."""
+        """Drop: brighter version of reactive with UV boost (min 80%)."""
         commands: dict[int, FixtureCommand] = {}
 
-        base_intensity = 0.5 + state.energy * 0.5
+        eb = energy_brightness(state.energy)
+        base_intensity = max(0.80, 0.70 + eb * 0.30)
         color = self._cycle_color(state)
+        # Add white at 40% during drops for extra brightness
+        color = Color(color.r, color.g, color.b, w=max(color.w, 0.40))
 
         # Kick boost
         if state.onset_type == "kick" or state.is_beat:
-            base_intensity = min(1.0, base_intensity + 0.2)
+            base_intensity = min(1.0, base_intensity + 0.10)
 
         # All pars full fill
         for f in self._pars:
@@ -234,7 +241,7 @@ class GenericProfile(BaseProfile):
 
         section_mult = _SECTION_INTENSITY.get(state.segment, 0.4)
         breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = section_mult * (0.3 + breath * 0.3)
+        intensity = section_mult * (0.5 + breath * 0.3)
 
         for f in self._pars:
             commands[f.fixture_id] = self._cmd(f, SOFT_BLUE, intensity)

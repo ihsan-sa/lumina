@@ -158,6 +158,27 @@ def ease_in_out(t: float) -> float:
     return 1.0 - (-2.0 * t + 2.0) ** 3 / 2.0
 
 
+def energy_brightness(energy: float, gamma: float = 0.5) -> float:
+    """Map energy to perceived brightness using a power curve.
+
+    Boosts low and mid energy values so lights feel alive even during
+    quieter sections.  Default gamma=0.5 (square root) maps::
+
+        energy 0.2 → 0.45
+        energy 0.4 → 0.63
+        energy 0.6 → 0.77
+        energy 0.8 → 0.89
+
+    Args:
+        energy: 0.0-1.0 energy level from audio analysis.
+        gamma: Power exponent (<1.0 boosts low values, >1.0 compresses).
+
+    Returns:
+        Mapped brightness 0.0-1.0.
+    """
+    return max(0.0, min(1.0, energy)) ** gamma
+
+
 # ─── BaseProfile ────────────────────────────────────────────────────
 
 
