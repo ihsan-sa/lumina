@@ -54,7 +54,12 @@ _FAMILY_PROFILES: dict[str, list[str]] = {
     "hiphop_rap": ["rage_trap", "psych_rnb", "french_melodic", "french_hard", "euro_alt"],
     "electronic": ["theatrical", "festival_edm", "uk_bass"],
     "hybrid": [
-        "rage_trap", "psych_rnb", "euro_alt", "theatrical", "festival_edm", "uk_bass",
+        "rage_trap",
+        "psych_rnb",
+        "euro_alt",
+        "theatrical",
+        "festival_edm",
+        "uk_bass",
     ],
 }
 
@@ -219,9 +224,9 @@ class GenreClassifier:
     def __init__(
         self,
         fps: int = 60,
-        window_seconds: float = 8.0,
-        smoothing: float = 0.9,
-        temperature: float = 0.5,
+        window_seconds: float = 30.0,
+        smoothing: float = 0.995,
+        temperature: float = 0.3,
     ) -> None:
         self._fps = fps
         self._window_size = max(1, int(fps * window_seconds))
@@ -332,6 +337,39 @@ class GenreClassifier:
         if n == 0:
             return []
 
+        # Seed feature windows with global averages so classification
+        # starts with reasonable context instead of building from zero.
+        # This prevents the first ~30s from drifting before enough data
+        # accumulates in the rolling window.
+        seed_count = min(n, self._window_size)
+        avg_energy = float(np.mean(energies[:seed_count]))
+        avg_centroid = float(
+            np.mean([min(1.0, c / 10000.0) for c in spectral_centroids[:seed_count]])
+        )
+        avg_bass = float(np.mean(sub_bass_energies[:seed_count]))
+        avg_onset = float(np.mean([1.0 if o else 0.0 for o in has_onsets[:seed_count]]))
+        avg_vocal = float(np.mean(vocal_energies[:seed_count]))
+        avg_drop = float(np.mean(drop_probabilities[:seed_count]))
+
+        # Pre-fill windows with global averages (half the window size
+        # to allow real data to quickly dominate)
+        prefill = self._window_size // 2
+        for _ in range(prefill):
+            self._energy_history.append(avg_energy)
+            self._centroid_history.append(avg_centroid)
+            self._bass_history.append(avg_bass)
+            self._onset_history.append(avg_onset)
+            self._vocal_history.append(avg_vocal)
+            self._drop_history.append(avg_drop)
+
+        # Run a single classification pass with seeded data to initialize
+        # the EMA weights before processing actual frames
+        seed_features = self._compute_features()
+        seed_family = self._classify_family(seed_features)
+        seed_genre = self._classify_profiles(seed_features, seed_family)
+        self._prev_family_weights = seed_family
+        self._prev_weights = seed_genre
+
         return [
             self.process_frame(
                 energy=energies[i],
@@ -357,25 +395,12 @@ class GenreClassifier:
             "energy_mean": float(np.mean(energies)),
             "energy_variance": float(np.var(energies)),
             "spectral_centroid_norm": (
-                float(np.mean(self._centroid_history))
-                if self._centroid_history else 0.0
+                float(np.mean(self._centroid_history)) if self._centroid_history else 0.0
             ),
-            "sub_bass_ratio": (
-                float(np.mean(self._bass_history))
-                if self._bass_history else 0.0
-            ),
-            "onset_density": (
-                float(np.mean(self._onset_history))
-                if self._onset_history else 0.0
-            ),
-            "vocal_ratio": (
-                float(np.mean(self._vocal_history))
-                if self._vocal_history else 0.0
-            ),
-            "drop_tendency": (
-                float(np.mean(self._drop_history))
-                if self._drop_history else 0.0
-            ),
+            "sub_bass_ratio": (float(np.mean(self._bass_history)) if self._bass_history else 0.0),
+            "onset_density": (float(np.mean(self._onset_history)) if self._onset_history else 0.0),
+            "vocal_ratio": (float(np.mean(self._vocal_history)) if self._vocal_history else 0.0),
+            "drop_tendency": (float(np.mean(self._drop_history)) if self._drop_history else 0.0),
         }
 
     def _classify_family(self, features: dict[str, float]) -> dict[str, float]:

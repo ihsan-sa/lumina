@@ -16,7 +16,6 @@ from lumina.audio.genre_classifier import (
     GenreFrame,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
@@ -34,14 +33,16 @@ def feed_constant_frames(
     results: list[GenreFrame] = []
     for i in range(n_frames):
         has_onset = onset_every > 0 and i % onset_every == 0
-        results.append(clf.process_frame(
-            energy=energy,
-            spectral_centroid=spectral_centroid,
-            sub_bass_energy=sub_bass_energy,
-            has_onset=has_onset,
-            vocal_energy=vocal_energy,
-            drop_probability=drop_probability,
-        ))
+        results.append(
+            clf.process_frame(
+                energy=energy,
+                spectral_centroid=spectral_centroid,
+                sub_bass_energy=sub_bass_energy,
+                has_onset=has_onset,
+                vocal_energy=vocal_energy,
+                drop_probability=drop_probability,
+            )
+        )
     return results
 
 
@@ -128,7 +129,8 @@ class TestFamilyClassification:
         """Hip-hop features (sub-bass, vocals, low centroid) should favor hiphop_rap."""
         clf = self._make_classifier(smoothing=0.3)
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.55,
             spectral_centroid=3500.0,
             sub_bass_energy=0.50,
@@ -143,7 +145,8 @@ class TestFamilyClassification:
         """Electronic features (high centroid, drops, low vocals) should favor electronic."""
         clf = self._make_classifier(smoothing=0.3)
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.70,
             spectral_centroid=5500.0,
             sub_bass_energy=0.45,
@@ -174,7 +177,8 @@ class TestProfileClassification:
         clf = self._make_classifier(smoothing=0.3)
         # Carti/Travis: high energy contrast, heavy 808s, sparse vocals
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.65,
             spectral_centroid=3500.0,
             sub_bass_energy=0.60,
@@ -193,7 +197,8 @@ class TestProfileClassification:
         clf = self._make_classifier(smoothing=0.3)
         # Guetta/Armin: high energy, bright, build-drop cycles
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.72,
             spectral_centroid=6000.0,
             sub_bass_energy=0.50,
@@ -211,7 +216,8 @@ class TestProfileClassification:
         clf = self._make_classifier(smoothing=0.3)
         # Weeknd/Toliver: smooth, atmospheric, rich vocals
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.50,
             spectral_centroid=4500.0,
             sub_bass_energy=0.40,
@@ -229,7 +235,8 @@ class TestProfileClassification:
         clf = self._make_classifier(smoothing=0.3)
         # Fred again..: bass-heavy, raw, low vocals, moderate drops
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.65,
             spectral_centroid=4000.0,
             sub_bass_energy=0.60,
@@ -247,7 +254,8 @@ class TestProfileClassification:
         clf = self._make_classifier(smoothing=0.3)
         # AyVe/Exetra: restrained, sparse, artistic
         frames = feed_constant_frames(
-            clf, 600,
+            clf,
+            600,
             energy=0.35,
             spectral_centroid=5000.0,
             sub_bass_energy=0.25,
@@ -284,12 +292,14 @@ class TestSmoothing:
         clf = self._make_classifier(smoothing=0.3)
 
         # Feed hip-hop features
-        feed_constant_frames(clf, 300, energy=0.55, vocal_energy=0.6,
-                             sub_bass_energy=0.5, drop_probability=0.1)
+        feed_constant_frames(
+            clf, 300, energy=0.55, vocal_energy=0.6, sub_bass_energy=0.5, drop_probability=0.1
+        )
 
         # Switch to EDM features
-        frames = feed_constant_frames(clf, 300, energy=0.72, vocal_energy=0.15,
-                                      spectral_centroid=6000.0, drop_probability=0.6)
+        frames = feed_constant_frames(
+            clf, 300, energy=0.72, vocal_energy=0.15, spectral_centroid=6000.0, drop_probability=0.6
+        )
 
         # EDM profile should have gained weight
         last = frames[-1]
@@ -301,10 +311,12 @@ class TestSmoothing:
         clf_high_temp = self._make_classifier(smoothing=0.0, temperature=2.0)
 
         # Same features for both
-        low_frames = feed_constant_frames(clf_low_temp, 600, energy=0.7,
-                                          sub_bass_energy=0.6, vocal_energy=0.35)
-        high_frames = feed_constant_frames(clf_high_temp, 600, energy=0.7,
-                                           sub_bass_energy=0.6, vocal_energy=0.35)
+        low_frames = feed_constant_frames(
+            clf_low_temp, 600, energy=0.7, sub_bass_energy=0.6, vocal_energy=0.35
+        )
+        high_frames = feed_constant_frames(
+            clf_high_temp, 600, energy=0.7, sub_bass_energy=0.6, vocal_energy=0.35
+        )
 
         # Low temp should have higher max weight (more peaked)
         low_max = max(low_frames[-1].genre_weights.values())
@@ -354,31 +366,27 @@ class TestOfflineClassification:
             assert f.family in FAMILY_NAMES
             assert sum(f.genre_weights.values()) == pytest.approx(1.0, abs=0.01)
 
-    def test_offline_matches_streaming(self) -> None:
-        """Offline should produce same results as sequential streaming."""
-        clf1 = self._make_classifier(smoothing=0.5)
-        clf2 = self._make_classifier(smoothing=0.5)
+    def test_offline_seeding_converges_faster(self) -> None:
+        """Offline seeding should produce stable classification from the start."""
+        clf = self._make_classifier(smoothing=0.5)
 
-        n = 60
-        energies = [0.5 + 0.01 * i for i in range(n)]
-        centroids = [3000.0] * n
-        basses = [0.3] * n
-        onsets = [i % 5 == 0 for i in range(n)]
-        vocals = [0.4] * n
-        drops = [0.1] * n
+        n = 300
+        # Rage-trap-like features: high energy, heavy bass, low vocals
+        energies = [0.65] * n
+        centroids = [3500.0] * n
+        basses = [0.6] * n
+        onsets = [i % 3 == 0 for i in range(n)]
+        vocals = [0.3] * n
+        drops = [0.3] * n
 
-        offline = clf1.classify_offline(energies, centroids, basses, onsets, vocals, drops)
-        streaming = [
-            clf2.process_frame(energies[i], centroids[i], basses[i],
-                               onsets[i], vocals[i], drops[i])
-            for i in range(n)
-        ]
+        offline = clf.classify_offline(energies, centroids, basses, onsets, vocals, drops)
 
-        for o, s in zip(offline, streaming):
-            for profile in PROFILE_NAMES:
-                assert o.genre_weights[profile] == pytest.approx(
-                    s.genre_weights[profile], abs=0.001
-                )
+        # With seeding, even the first frame should have a reasonable
+        # classification (not uniform) since windows are pre-filled
+        first = offline[0]
+        top_profile = max(first.genre_weights, key=first.genre_weights.get)  # type: ignore[arg-type]
+        # Top profile weight should be above uniform (1/8 = 0.125)
+        assert first.genre_weights[top_profile] > 0.15
 
 
 # ── Reset ─────────────────────────────────────────────────────────────
@@ -420,7 +428,13 @@ class TestProfileDefinitions:
 
     def test_profile_names(self) -> None:
         expected = {
-            "rage_trap", "psych_rnb", "french_melodic", "french_hard",
-            "euro_alt", "theatrical", "festival_edm", "uk_bass",
+            "rage_trap",
+            "psych_rnb",
+            "french_melodic",
+            "french_hard",
+            "euro_alt",
+            "theatrical",
+            "festival_edm",
+            "uk_bass",
         }
         assert set(PROFILE_NAMES) == expected
