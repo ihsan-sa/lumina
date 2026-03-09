@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(lumina/**)",
+      "Write(simulator/**)",
+      "Write(firmware/**)",
+      "Write(tests/**)",
+      "Write(docs/**)",
+      "Write(scripts/**)",
+      "Edit(lumina/**)",
+      "Edit(simulator/**)",
+      "Edit(firmware/**)",
+      "Edit(tests/**)",
+      "Edit(docs/**)",
+      "Bash(pytest*)",
+      "Bash(ruff*)",
+      "Bash(mypy*)",
+      "Bash(npm run*)",
+      "Bash(python*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(ls*)",
+      "Bash(cat*)",
+      "Bash(find*)",
+      "Bash(grep*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)*",
+      "Bash(sudo*)",
+      "Write(CLAUDE.md)"
+    ]
+  }
+}

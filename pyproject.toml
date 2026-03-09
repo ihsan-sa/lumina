@@ -1,0 +1,97 @@
+[project]
+name = "lumina"
+version = "0.1.0"
+description = "AI-Powered Intelligent Light Show System"
+requires-python = ">=3.11"
+dependencies = [
+    # Audio analysis
+    "librosa>=0.10",
+    "madmom>=0.16",
+    "essentia>=2.1b6",
+    "aubio>=0.4",
+    "sounddevice>=0.4",
+    "numpy>=1.26",
+    "scipy>=1.12",
+
+    # ML
+    "torch>=2.1",
+
+    # Source separation (GPU-accelerated on both dev RTX 4070 and prod Jetson Orin)
+    "demucs>=4.0",
+
+    # Networking
+    "websockets>=12.0",
+    "starlette>=0.36",
+    "uvicorn>=0.27",
+
+    # Utilities
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+]
+jetson = [
+    # Jetson-specific overrides — install PyTorch from NVIDIA wheels, not pip
+    # See: https://developer.nvidia.com/embedded/downloads
+    # This extra exists as a reminder; actual install uses NVIDIA's .whl files
+]
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lumina"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "librosa.*",
+    "madmom.*",
+    "essentia.*",
+    "aubio.*",
+    "sounddevice.*",
+    "demucs.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests that require audio file processing (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU (deselect with '-m \"not gpu\"')",
+]

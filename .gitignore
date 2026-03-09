@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node / Simulator
+simulator/node_modules/
+simulator/dist/
+simulator/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Audio test files (large)
+tests/fixtures/audio/*.wav
+tests/fixtures/audio/*.mp3
+tests/fixtures/audio/*.flac
+!tests/fixtures/audio/.gitkeep
+
+# Firmware build artifacts
+firmware/build/
+
+# Environment
+.env
+.env.local
