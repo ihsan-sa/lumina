@@ -4,7 +4,11 @@
       "Bash(.venv/Scripts/python:*)",
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(/c/dev/lumina/.venv/Scripts/python.exe:*)",
-      "Bash(.venv/Scripts/python.exe:*)"
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx vite:*)"
     ]
   }
 }
