@@ -68,9 +68,13 @@ class Color:
         )
 
 
-def _clamp8(v: float) -> int:
+def clamp8(v: float) -> int:
     """Clamp float 0.0-1.0 to int 0-255."""
     return max(0, min(255, int(v * 255)))
+
+
+# Keep the old name as an alias for backward compatibility
+_clamp8 = clamp8
 
 
 BLACK = Color(0.0, 0.0, 0.0, 0.0)
@@ -179,6 +183,74 @@ def energy_brightness(energy: float, gamma: float = 0.5) -> float:
     return max(0.0, min(1.0, energy)) ** gamma
 
 
+# ─── Shared command routing ────────────────────────────────────────
+
+
+def route_command(
+    fixture: FixtureInfo,
+    color: Color = BLACK,
+    intensity: float = 1.0,
+    strobe_rate: int = 0,
+    strobe_intensity: int = 0,
+    special: int | None = None,
+) -> FixtureCommand:
+    """Build a FixtureCommand with fixture-type-aware channel routing.
+
+    This is the shared routing logic used by both BaseProfile._cmd() and
+    the standalone pattern functions in lumina.lighting.patterns.
+
+    Args:
+        fixture: Target fixture.
+        color: Desired color (already scaled by intensity if needed).
+        intensity: Master intensity 0.0-1.0 (used for auto-deriving special).
+        strobe_rate: Strobe rate 0-255.
+        strobe_intensity: Strobe brightness 0-255.
+        special: Override for the special byte.
+
+    Returns:
+        FixtureCommand for this fixture.
+    """
+    r, g, b, w = color.to_bytes()
+
+    if fixture.fixture_type == FixtureType.PAR:
+        sp = special if special is not None else _clamp8(intensity)
+        return FixtureCommand(
+            fixture_id=fixture.fixture_id,
+            red=r, green=g, blue=b, white=w,
+            strobe_rate=0, strobe_intensity=0, special=sp,
+        )
+    elif fixture.fixture_type == FixtureType.STROBE:
+        return FixtureCommand(
+            fixture_id=fixture.fixture_id,
+            red=r, green=g, blue=b, white=w,
+            strobe_rate=strobe_rate, strobe_intensity=strobe_intensity,
+            special=special if special is not None else 0,
+        )
+    elif fixture.fixture_type == FixtureType.LED_BAR:
+        # LED bars behave like pars: RGBW color wash, special = master dimmer
+        sp = special if special is not None else _clamp8(intensity)
+        return FixtureCommand(
+            fixture_id=fixture.fixture_id,
+            red=r, green=g, blue=b, white=w,
+            strobe_rate=0, strobe_intensity=0, special=sp,
+        )
+    elif fixture.fixture_type == FixtureType.LASER:
+        # Laser: special = pattern_id (0 = off). RGBW/strobe ignored.
+        sp = special if special is not None else 0
+        return FixtureCommand(
+            fixture_id=fixture.fixture_id,
+            red=0, green=0, blue=0, white=0,
+            strobe_rate=0, strobe_intensity=0, special=sp,
+        )
+    else:  # UV
+        sp = special if special is not None else _clamp8(intensity)
+        return FixtureCommand(
+            fixture_id=fixture.fixture_id,
+            red=0, green=0, blue=0, white=0,
+            strobe_rate=0, strobe_intensity=0, special=sp,
+        )
+
+
 # ─── BaseProfile ────────────────────────────────────────────────────
 
 
@@ -244,43 +316,11 @@ class BaseProfile(ABC):
             FixtureCommand for this fixture.
         """
         scaled = color.scaled(intensity)
-        r, g, b, w = scaled.to_bytes()
-
-        if fixture.fixture_type == FixtureType.PAR:
-            sp = special if special is not None else _clamp8(intensity)
-            return FixtureCommand(
-                fixture_id=fixture.fixture_id,
-                red=r,
-                green=g,
-                blue=b,
-                white=w,
-                strobe_rate=0,
-                strobe_intensity=0,
-                special=sp,
-            )
-        elif fixture.fixture_type == FixtureType.STROBE:
-            return FixtureCommand(
-                fixture_id=fixture.fixture_id,
-                red=r,
-                green=g,
-                blue=b,
-                white=w,
-                strobe_rate=strobe_rate,
-                strobe_intensity=strobe_intensity,
-                special=special if special is not None else 0,
-            )
-        else:  # UV
-            sp = special if special is not None else _clamp8(intensity)
-            return FixtureCommand(
-                fixture_id=fixture.fixture_id,
-                red=0,
-                green=0,
-                blue=0,
-                white=0,
-                strobe_rate=0,
-                strobe_intensity=0,
-                special=sp,
-            )
+        return route_command(
+            fixture, color=scaled, intensity=intensity,
+            strobe_rate=strobe_rate, strobe_intensity=strobe_intensity,
+            special=special,
+        )
 
     def _blackout(self) -> list[FixtureCommand]:
         """All fixtures to black / off.
@@ -302,7 +342,7 @@ class BaseProfile(ABC):
         """
         commands: list[FixtureCommand] = []
         for f in self._map.all:
-            if f.fixture_type == FixtureType.PAR:
+            if f.fixture_type in (FixtureType.PAR, FixtureType.LED_BAR):
                 commands.append(self._cmd(f, color, intensity))
             else:
                 commands.append(self._cmd(f, BLACK, intensity=0.0))

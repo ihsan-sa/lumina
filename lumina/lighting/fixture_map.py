@@ -4,8 +4,12 @@ Manages fixture metadata — ID, type, position, role, and group
 memberships — so that lighting profiles can generate spatially-aware
 commands (sweeps, chases, corner isolation, etc.).
 
-Default layout: 4 RGBW pars in ceiling corners, 2 strobes on
-center-line, 2 UV bars on side walls.  Room: 5m × 7m × 2.5m.
+Default layout: 15 fixtures in a 5m × 7m × 2.5m room.
+  IDs 1-4:   RGBW Par, left wall (evenly spaced along 7m wall)
+  IDs 5-8:   RGBW Par, right wall (mirroring left)
+  IDs 9-12:  Strobe, four corners (mounted high)
+  IDs 13-14: LED Bar, ceiling-mounted overhead (running lengthwise)
+  ID 15:     Laser, rear wall center (mounted high)
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ class FixtureType(Enum):
     PAR = "par"
     STROBE = "strobe"
     UV = "uv"
+    LED_BAR = "led_bar"
+    LASER = "laser"
 
 
 class FixtureRole(Enum):
@@ -42,10 +48,11 @@ class FixtureInfo:
 
     Args:
         fixture_id: Unique fixture address (1-255).
-        fixture_type: Physical type (par, strobe, uv).
-        position: (x, y, z) in meters.  Origin is floor-level back-left corner.
+        fixture_type: Physical type (par, strobe, uv, led_bar, laser).
+        position: (x, y, z) in meters.  Origin is floor-level front-left corner.
         role: Spatial role for pattern generation.
         groups: Set of group names this fixture belongs to.
+        name: Human-readable name for this fixture.
     """
 
     fixture_id: int
@@ -53,6 +60,7 @@ class FixtureInfo:
     position: tuple[float, float, float]
     role: FixtureRole
     groups: set[str] = field(default_factory=set)
+    name: str = ""
 
 
 # ─── Room dimensions ────────────────────────────────────────────────
@@ -61,7 +69,7 @@ ROOM_WIDTH = 5.0  # x-axis (meters)
 ROOM_DEPTH = 7.0  # y-axis (meters)
 ROOM_HEIGHT = 2.5  # z-axis (meters)
 
-# Margin from walls for ceiling-mounted fixtures
+# Margin from walls for corner-mounted fixtures
 _CORNER_MARGIN = 0.3
 
 
@@ -70,7 +78,7 @@ class FixtureMap:
 
     Args:
         fixtures: Optional list of FixtureInfo to initialize with.
-            If None, the default 8-fixture layout is used.
+            If None, the default 15-fixture layout is used.
     """
 
     def __init__(self, fixtures: list[FixtureInfo] | None = None) -> None:
@@ -207,86 +215,194 @@ class FixtureMap:
             key=lambda f: f.fixture_id,
         )
 
+    # ─── Convenience aliases ─────────────────────────────────────
+
+    def get_by_type(self, fixture_type: FixtureType) -> list[FixtureInfo]:
+        """Get all fixtures of a given type (alias for by_type).
+
+        Args:
+            fixture_type: Type to filter by.
+
+        Returns:
+            List of matching FixtureInfo sorted by ID.
+        """
+        return self.by_type(fixture_type)
+
+    def get_by_group(self, group: str) -> list[FixtureInfo]:
+        """Get all fixtures in a named group (alias for by_group).
+
+        Args:
+            group: Group name to filter by.
+
+        Returns:
+            List of matching FixtureInfo sorted by ID.
+        """
+        return self.by_group(group)
+
+    def get_left(self) -> list[FixtureInfo]:
+        """Fixtures in the 'left' group, sorted by y position.
+
+        Returns:
+            Left-wall fixtures sorted front-to-back.
+        """
+        return self.sorted_by_y(self.by_group("left"))
+
+    def get_right(self) -> list[FixtureInfo]:
+        """Fixtures in the 'right' group, sorted by y position.
+
+        Returns:
+            Right-wall fixtures sorted front-to-back.
+        """
+        return self.sorted_by_y(self.by_group("right"))
+
+    def get_by_spatial_order(self) -> list[FixtureInfo]:
+        """All fixtures sorted left-to-right (by x position) for chase patterns.
+
+        Returns:
+            All fixtures sorted by ascending x, then by y for ties.
+        """
+        return sorted(self.all, key=lambda f: (f.position[0], f.position[1]))
+
 
 def _default_fixtures() -> list[FixtureInfo]:
-    """Create the default 8-fixture layout for a 5m×7m×2.5m room.
+    """Create the default 15-fixture layout for a 5m×7m×2.5m room.
 
     Layout:
-        ID 1: RGBW Par — front-left ceiling corner
-        ID 2: RGBW Par — front-right ceiling corner
-        ID 3: RGBW Par — back-left ceiling corner
-        ID 4: RGBW Par — back-right ceiling corner
-        ID 5: Strobe  — ceiling center-line, front third
-        ID 6: Strobe  — ceiling center-line, back third
-        ID 7: UV Bar  — left wall, mid-height
-        ID 8: UV Bar  — right wall, mid-height
+        IDs 1-4:   RGBW Par — left wall, evenly spaced along 7m wall
+        IDs 5-8:   RGBW Par — right wall, mirroring left
+        IDs 9-12:  Strobe — four corners, mounted high
+        IDs 13-14: LED Bar — ceiling center-line, running lengthwise
+        ID 15:     Laser — rear wall center, mounted high
 
     Returns:
-        List of 8 FixtureInfo instances.
+        List of 15 FixtureInfo instances.
     """
-    cx = ROOM_WIDTH / 2  # center x
     m = _CORNER_MARGIN
-    ceil = ROOM_HEIGHT
-    uv_h = 2.0  # UV bars mounted at 2m
 
     return [
-        # ── RGBW Pars (ceiling corners) ──
+        # ── RGBW Pars: left wall (x=0, evenly spaced along y) ──
         FixtureInfo(
             fixture_id=1,
             fixture_type=FixtureType.PAR,
-            position=(m, m, ceil),
-            role=FixtureRole.FRONT_LEFT,
-            groups={"pars", "corners", "front", "left"},
+            position=(0.0, 1.4, 2.0),
+            role=FixtureRole.LEFT,
+            groups={"par_left", "par_all", "left"},
+            name="Par L1",
         ),
         FixtureInfo(
             fixture_id=2,
             fixture_type=FixtureType.PAR,
-            position=(ROOM_WIDTH - m, m, ceil),
-            role=FixtureRole.FRONT_RIGHT,
-            groups={"pars", "corners", "front", "right"},
+            position=(0.0, 2.8, 2.1),
+            role=FixtureRole.LEFT,
+            groups={"par_left", "par_all", "left"},
+            name="Par L2",
         ),
         FixtureInfo(
             fixture_id=3,
             fixture_type=FixtureType.PAR,
-            position=(m, ROOM_DEPTH - m, ceil),
-            role=FixtureRole.BACK_LEFT,
-            groups={"pars", "corners", "back", "left"},
+            position=(0.0, 4.2, 2.2),
+            role=FixtureRole.LEFT,
+            groups={"par_left", "par_all", "left"},
+            name="Par L3",
         ),
         FixtureInfo(
             fixture_id=4,
             fixture_type=FixtureType.PAR,
-            position=(ROOM_WIDTH - m, ROOM_DEPTH - m, ceil),
-            role=FixtureRole.BACK_RIGHT,
-            groups={"pars", "corners", "back", "right"},
+            position=(0.0, 5.6, 2.3),
+            role=FixtureRole.LEFT,
+            groups={"par_left", "par_all", "left"},
+            name="Par L4",
         ),
-        # ── Strobes (ceiling center-line) ──
+        # ── RGBW Pars: right wall (x=5.0, mirroring left) ──
         FixtureInfo(
             fixture_id=5,
-            fixture_type=FixtureType.STROBE,
-            position=(cx, ROOM_DEPTH * 0.33, ceil),
-            role=FixtureRole.CENTER,
-            groups={"strobes", "center", "front"},
+            fixture_type=FixtureType.PAR,
+            position=(5.0, 1.4, 2.0),
+            role=FixtureRole.RIGHT,
+            groups={"par_right", "par_all", "right"},
+            name="Par R1",
         ),
         FixtureInfo(
             fixture_id=6,
-            fixture_type=FixtureType.STROBE,
-            position=(cx, ROOM_DEPTH * 0.67, ceil),
-            role=FixtureRole.CENTER,
-            groups={"strobes", "center", "back"},
+            fixture_type=FixtureType.PAR,
+            position=(5.0, 2.8, 2.1),
+            role=FixtureRole.RIGHT,
+            groups={"par_right", "par_all", "right"},
+            name="Par R2",
         ),
-        # ── UV Bars (side walls) ──
         FixtureInfo(
             fixture_id=7,
-            fixture_type=FixtureType.UV,
-            position=(0.0, ROOM_DEPTH / 2, uv_h),
-            role=FixtureRole.LEFT,
-            groups={"uv", "walls", "left"},
+            fixture_type=FixtureType.PAR,
+            position=(5.0, 4.2, 2.2),
+            role=FixtureRole.RIGHT,
+            groups={"par_right", "par_all", "right"},
+            name="Par R3",
         ),
         FixtureInfo(
             fixture_id=8,
-            fixture_type=FixtureType.UV,
-            position=(ROOM_WIDTH, ROOM_DEPTH / 2, uv_h),
+            fixture_type=FixtureType.PAR,
+            position=(5.0, 5.6, 2.3),
             role=FixtureRole.RIGHT,
-            groups={"uv", "walls", "right"},
+            groups={"par_right", "par_all", "right"},
+            name="Par R4",
+        ),
+        # ── Strobes: four corners, mounted at 2.4m ──
+        FixtureInfo(
+            fixture_id=9,
+            fixture_type=FixtureType.STROBE,
+            position=(m, m, 2.4),
+            role=FixtureRole.FRONT_LEFT,
+            groups={"strobe_corners", "strobe_left"},
+            name="Strobe FL",
+        ),
+        FixtureInfo(
+            fixture_id=10,
+            fixture_type=FixtureType.STROBE,
+            position=(ROOM_WIDTH - m, m, 2.4),
+            role=FixtureRole.FRONT_RIGHT,
+            groups={"strobe_corners", "strobe_right"},
+            name="Strobe FR",
+        ),
+        FixtureInfo(
+            fixture_id=11,
+            fixture_type=FixtureType.STROBE,
+            position=(m, ROOM_DEPTH - m, 2.4),
+            role=FixtureRole.BACK_LEFT,
+            groups={"strobe_corners", "strobe_left"},
+            name="Strobe BL",
+        ),
+        FixtureInfo(
+            fixture_id=12,
+            fixture_type=FixtureType.STROBE,
+            position=(ROOM_WIDTH - m, ROOM_DEPTH - m, 2.4),
+            role=FixtureRole.BACK_RIGHT,
+            groups={"strobe_corners", "strobe_right"},
+            name="Strobe BR",
+        ),
+        # ── LED Bars: ceiling center-line, running lengthwise ──
+        FixtureInfo(
+            fixture_id=13,
+            fixture_type=FixtureType.LED_BAR,
+            position=(ROOM_WIDTH / 2, ROOM_DEPTH / 3, ROOM_HEIGHT),
+            role=FixtureRole.CENTER,
+            groups={"overhead", "center"},
+            name="Bar Front",
+        ),
+        FixtureInfo(
+            fixture_id=14,
+            fixture_type=FixtureType.LED_BAR,
+            position=(ROOM_WIDTH / 2, ROOM_DEPTH * 2 / 3, ROOM_HEIGHT),
+            role=FixtureRole.CENTER,
+            groups={"overhead", "center"},
+            name="Bar Rear",
+        ),
+        # ── Laser: rear wall center, mounted high ──
+        FixtureInfo(
+            fixture_id=15,
+            fixture_type=FixtureType.LASER,
+            position=(ROOM_WIDTH / 2, ROOM_DEPTH, 2.4),
+            role=FixtureRole.BACK,
+            groups={"laser", "back"},
+            name="Laser",
         ),
     ]

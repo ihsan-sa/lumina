@@ -97,7 +97,7 @@ class TestBlackout:
     def test_blackout_all_zero(self) -> None:
         p = _make_profile()
         cmds = p._blackout()
-        assert len(cmds) == 8
+        assert len(cmds) == 15
         for c in cmds:
             assert c.red == 0
             assert c.green == 0
@@ -130,12 +130,12 @@ class TestSweep:
     def test_sweep_x_covers_all(self) -> None:
         p = _make_profile()
         result = p._sweep_x(0.5, RED)
-        assert len(result) == 8
+        assert len(result) == 15
 
     def test_sweep_y_covers_all(self) -> None:
         p = _make_profile()
         result = p._sweep_y(0.5, RED)
-        assert len(result) == 8
+        assert len(result) == 15
 
 
 class TestAlternating:
@@ -153,10 +153,11 @@ class TestCornerIsolation:
     def test_only_one_corner_lit(self) -> None:
         p = _make_profile()
         cmds = p._corner_isolation("front_left", RED)
-        assert len(cmds) == 8
+        assert len(cmds) == 15
+        # FRONT_LEFT role is now strobe ID 9; strobes route color to RGB
         lit = [c for c in cmds if c.red > 0]
         assert len(lit) == 1
-        assert lit[0].fixture_id == 1
+        assert lit[0].fixture_id == 9
 
 
 class TestMergeCommands:
@@ -165,7 +166,7 @@ class TestMergeCommands:
         base = p._blackout()
         override = {1: FixtureCommand(fixture_id=1, red=255)}
         merged = p._merge_commands(override, base=base)
-        assert len(merged) == 8
+        assert len(merged) == 15
         assert merged[0].red == 255
         assert merged[1].red == 0
 

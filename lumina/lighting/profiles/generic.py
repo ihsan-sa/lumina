@@ -7,21 +7,13 @@ has >0.3 weight), this profile takes over. It must produce acceptable
 lighting for any genre, tempo, or mood.
 
 Lighting language:
-- Palette: Moderate blues, purples, warm whites. Safe, universally
-  pleasing colors that work with any music.
-- Energy-reactive: Global brightness follows the energy envelope.
-  High energy = bright room. Low energy = dim room. Simple and correct.
-- Beat-reactive: Subtle par pulse on kicks (brief brightness bump, not
-  a flash). Gentle strobe on snares (low rate, low intensity).
-- Color cycling: Smooth 8-bar color loop through blues → purple → warm
-  white → back. Gradual enough that you barely notice it changing.
-- Section-aware: Brighter on chorus/drop, dimmer on verse/breakdown.
-  Multiplicative intensity modifier by section.
-- Spatial: Slow L→R sweep on pars during verses, all-fill during
-  choruses, breathing on breakdowns.
-- UV: Low constant glow. Higher during drops.
-- Strobes: Conservative. Only on snare hits during high-energy sections.
-  Never aggressive.
+- Verse: wash_hold on pars (blue/purple) + gentle alternate on kicks.
+- Chorus: chase_lr on pars (medium speed) + strobe on snares only.
+- Drop: diverge on pars + wash_hold on overhead (full) + strobes on kicks.
+- Breakdown: breathe on 2 pars (slow) + everything else dim.
+- LED bars: follow pars at reduced intensity across all segments.
+- Laser: off except during drops (low-speed pattern).
+- Fixture count escalation: 2-4 at low energy, 6-10 medium, all 15 high.
 """
 
 from __future__ import annotations
@@ -29,6 +21,16 @@ from __future__ import annotations
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
+from lumina.lighting.patterns import (
+    alternate,
+    breathe,
+    chase_lr,
+    diverge,
+    make_command,
+    select_active_fixtures,
+    strobe_burst,
+    wash_hold,
+)
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
@@ -38,7 +40,7 @@ from lumina.lighting.profiles.base import (
     sine_pulse,
 )
 
-# ─── Generic palette (max RGB channel = 1.0, white at 15-40%) ───────
+# ─── Generic palette ──────────────────────────────────────────────
 
 SOFT_BLUE = Color(0.12, 0.25, 1.0, 0.15)
 WARM_PURPLE = Color(0.57, 0.14, 1.0, 0.15)
@@ -59,13 +61,13 @@ _SECTION_INTENSITY: dict[str, float] = {
     "outro": 0.4,
 }
 
-# UV levels
-_UV_BASE = 60
-_UV_DROP = 150
-
 # Strobe limits (conservative)
 _SNARE_STROBE_RATE = 100
 _SNARE_STROBE_INTENSITY = 120
+
+# Laser
+_LASER_OFF = 0
+_LASER_DROP = 3
 
 
 class GenericProfile(BaseProfile):
@@ -85,7 +87,8 @@ class GenericProfile(BaseProfile):
         super().__init__(fixture_map)
         self._pars = self._map.by_type(FixtureType.PAR)
         self._strobes = self._map.by_type(FixtureType.STROBE)
-        self._uvs = self._map.by_type(FixtureType.UV)
+        self._led_bars = self._map.by_type(FixtureType.LED_BAR)
+        self._lasers = self._map.by_type(FixtureType.LASER)
         self._pars_lr = self._map.sorted_by_x(self._pars)
 
     def generate(self, state: MusicState) -> list[FixtureCommand]:
@@ -95,7 +98,7 @@ class GenericProfile(BaseProfile):
             state: Current audio analysis frame.
 
         Returns:
-            One FixtureCommand per fixture.
+            One FixtureCommand per fixture (15 total).
         """
         segment = state.segment
 
@@ -108,7 +111,6 @@ class GenericProfile(BaseProfile):
         if segment in ("intro", "outro"):
             return self._gentle(state)
 
-        # Verse / chorus: standard reactive
         return self._reactive(state)
 
     # ─── Segment handlers ──────────────────────────────────────────
@@ -116,141 +118,183 @@ class GenericProfile(BaseProfile):
     def _reactive(self, state: MusicState) -> list[FixtureCommand]:
         """Standard beat-reactive mode for verse/chorus.
 
-        Color cycling with energy-driven brightness. Kick pulses on
-        pars. Gentle strobe on snares during high energy. Sweep during
-        verse, full fill during chorus.
+        Verse: wash_hold + gentle alternate on kicks.
+        Chorus: chase_lr at medium speed + strobe on snares.
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Section modifier
         section_mult = _SECTION_INTENSITY.get(state.segment, 0.6)
-
-        # Base intensity from energy (boosted curve, floor 25% verse / 50% chorus)
         eb = energy_brightness(state.energy)
         base_intensity = (0.25 + eb * 0.55) * section_mult
 
-        # Kick pulse
+        # Kick boost
         kick_boost = 0.0
         if state.onset_type == "kick":
             kick_boost = 0.2
         elif state.is_beat:
             kick_boost = 0.1
 
-        # Color from 8-bar cycle
         color = self._cycle_color(state)
 
-        # Pars: sweep during verse, full fill during chorus
+        # Fixture escalation
+        active_pars = select_active_fixtures(
+            self._pars, state.energy,
+            low_count=3, mid_count=6, high_threshold=0.7,
+        )
+
         if state.segment == "chorus":
-            # White at 30% during chorus for brightness
+            # Chase L→R at medium speed
             chorus_color = Color(color.r, color.g, color.b, w=max(color.w, 0.30))
-            for f in self._pars:
-                intensity = min(1.0, base_intensity + kick_boost)
-                commands[f.fixture_id] = self._cmd(f, chorus_color, intensity)
-        else:
-            # Slow L→R sweep
-            sweep = self._sweep_x(
-                state.bar_phase, color, width=0.5,
-                intensity=min(1.0, base_intensity + kick_boost),
+            par_cmds = chase_lr(
+                active_pars, state, state.timestamp, chorus_color,
+                speed=1.0, width=0.4, intensity=min(1.0, base_intensity + kick_boost),
             )
-            commands.update(sweep)
+            commands.update(par_cmds)
+        else:
+            # Verse: wash_hold + gentle alternate on kicks
+            if state.onset_type == "kick":
+                par_cmds = alternate(
+                    active_pars, state, state.timestamp, color,
+                    color_b=color.scaled(0.3),
+                    intensity=min(1.0, base_intensity + kick_boost),
+                )
+            else:
+                par_cmds = wash_hold(
+                    active_pars, state, state.timestamp, color,
+                    intensity=base_intensity,
+                )
+            commands.update(par_cmds)
+
+        # Blackout inactive pars
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         # Strobes: gentle on snare hits in high-energy sections
         if state.onset_type == "snare" and state.energy > 0.5:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
+                commands[f.fixture_id] = make_command(
                     f, color, strobe_rate=_SNARE_STROBE_RATE,
                     strobe_intensity=_SNARE_STROBE_INTENSITY,
                 )
         elif state.is_downbeat and state.energy > 0.7:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
+                commands[f.fixture_id] = make_command(
                     f, color, strobe_rate=60, strobe_intensity=80,
                 )
         else:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # UV
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_BASE)
+        # LED bars: follow pars at reduced intensity
+        bar_cmds = wash_hold(
+            self._led_bars, state, state.timestamp, color,
+            intensity=base_intensity * 0.5,
+        )
+        commands.update(bar_cmds)
+
+        # Laser off
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
 
     def _drop(self, state: MusicState) -> list[FixtureCommand]:
-        """Drop: brighter version of reactive with UV boost (min 80%)."""
+        """Drop: diverge on pars + overhead full + strobes on kicks."""
         commands: dict[int, FixtureCommand] = {}
 
         eb = energy_brightness(state.energy)
         base_intensity = max(0.80, 0.70 + eb * 0.30)
         color = self._cycle_color(state)
-        # Add white at 40% during drops for extra brightness
         color = Color(color.r, color.g, color.b, w=max(color.w, 0.40))
 
-        # Kick boost
         if state.onset_type == "kick" or state.is_beat:
             base_intensity = min(1.0, base_intensity + 0.10)
 
-        # All pars full fill
-        for f in self._pars:
-            commands[f.fixture_id] = self._cmd(f, color, base_intensity)
+        # Diverge on all pars (center-out bloom)
+        par_cmds = diverge(
+            self._pars, state, state.timestamp, color, intensity=base_intensity,
+        )
+        commands.update(par_cmds)
 
         # Strobes on beats
         if state.is_beat:
-            for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
-                    f, WARM_WHITE, strobe_rate=140, strobe_intensity=160,
-                )
+            burst = strobe_burst(
+                self._strobes, state, state.timestamp, WARM_WHITE,
+                rate=140, burst_intensity=160,
+            )
+            commands.update(burst)
         else:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # UV higher
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_DROP)
+        # LED bars: full intensity during drops
+        bar_cmds = wash_hold(
+            self._led_bars, state, state.timestamp, color, intensity=base_intensity,
+        )
+        commands.update(bar_cmds)
+
+        # Laser: low-speed pattern during drops
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_DROP)
 
         return self._merge_commands(commands)
 
     def _breathing(self, state: MusicState) -> list[FixtureCommand]:
-        """Breakdown/bridge: slow breathing, dim wash on two pars only."""
+        """Breakdown/bridge: slow breathing on 2 pars, everything else dim."""
         commands: dict[int, FixtureCommand] = {}
-
-        section_mult = _SECTION_INTENSITY.get(state.segment, 0.3)
-        breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = section_mult * (0.2 + breath * 0.3)
 
         color = self._cycle_color(state)
 
-        # Only first two pars — keep the room dim
-        for i, f in enumerate(self._pars):
-            if i < 2:
-                commands[f.fixture_id] = self._cmd(f, color, intensity)
-            else:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+        # Only 2 pars breathing
+        active = self._pars[:2] if len(self._pars) >= 2 else self._pars
+        par_cmds = breathe(
+            active, state, state.timestamp, color,
+            min_intensity=0.10, max_intensity=0.25, period_bars=2.0,
+        )
+        commands.update(par_cmds)
 
+        # Other pars off
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # Everything else off
         for f in self._strobes:
-            commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_BASE)
+        # LED bars very dim
+        bar_cmds = wash_hold(
+            self._led_bars, state, state.timestamp, color, intensity=0.05,
+        )
+        commands.update(bar_cmds)
+
+        # Laser off
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
 
     def _gentle(self, state: MusicState) -> list[FixtureCommand]:
-        """Intro/outro: gentle low wash."""
+        """Intro/outro: gentle low breathe on all pars."""
         commands: dict[int, FixtureCommand] = {}
 
-        section_mult = _SECTION_INTENSITY.get(state.segment, 0.4)
-        breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = section_mult * (0.5 + breath * 0.3)
-
-        for f in self._pars:
-            commands[f.fixture_id] = self._cmd(f, SOFT_BLUE, intensity)
+        par_cmds = breathe(
+            self._pars, state, state.timestamp, SOFT_BLUE,
+            min_intensity=0.20, max_intensity=0.35, period_bars=2.0,
+        )
+        commands.update(par_cmds)
 
         for f in self._strobes:
-            commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_BASE)
+        bar_cmds = wash_hold(
+            self._led_bars, state, state.timestamp, SOFT_BLUE, intensity=0.15,
+        )
+        commands.update(bar_cmds)
+
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
 
@@ -268,7 +312,6 @@ class GenericProfile(BaseProfile):
         """
         bpm = max(60.0, state.bpm)
         bar_duration = 60.0 / bpm * 4.0
-        # Full cycle every 8 bars
         cycle_pos = (state.timestamp / (bar_duration * 8.0)) % 1.0
 
         n = len(_CYCLE_COLORS)

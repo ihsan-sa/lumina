@@ -14,31 +14,35 @@ from lumina.lighting.fixture_map import (
 
 
 class TestFixtureMapDefaults:
-    """Default 8-fixture layout."""
+    """Default 15-fixture layout."""
 
-    def test_default_has_eight_fixtures(self) -> None:
+    def test_default_has_fifteen_fixtures(self) -> None:
         fm = FixtureMap()
-        assert len(fm) == 8
+        assert len(fm) == 15
 
     def test_ids_sequential(self) -> None:
         fm = FixtureMap()
-        assert fm.ids == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert fm.ids == list(range(1, 16))
 
-    def test_four_pars(self) -> None:
+    def test_eight_pars(self) -> None:
         fm = FixtureMap()
         pars = fm.by_type(FixtureType.PAR)
-        assert len(pars) == 4
+        assert len(pars) == 8
         assert all(f.fixture_type == FixtureType.PAR for f in pars)
 
-    def test_two_strobes(self) -> None:
+    def test_four_strobes(self) -> None:
         fm = FixtureMap()
         strobes = fm.by_type(FixtureType.STROBE)
-        assert len(strobes) == 2
+        assert len(strobes) == 4
 
-    def test_two_uv(self) -> None:
+    def test_two_led_bars_and_one_laser(self) -> None:
         fm = FixtureMap()
+        led_bars = fm.by_type(FixtureType.LED_BAR)
+        assert len(led_bars) == 2
+        lasers = fm.by_type(FixtureType.LASER)
+        assert len(lasers) == 1
         uv = fm.by_type(FixtureType.UV)
-        assert len(uv) == 2
+        assert len(uv) == 0
 
     def test_get_by_id(self) -> None:
         fm = FixtureMap()
@@ -70,13 +74,21 @@ class TestSpatialQueries:
         fm = FixtureMap()
         fl = fm.by_role(FixtureRole.FRONT_LEFT)
         assert len(fl) == 1
-        assert fl[0].fixture_id == 1
+        assert fl[0].fixture_id == 9
+        assert fl[0].fixture_type == FixtureType.STROBE
+        # LEFT role should have 4 pars
+        left = fm.by_role(FixtureRole.LEFT)
+        assert len(left) == 4
+        assert all(f.fixture_type == FixtureType.PAR for f in left)
 
     def test_by_group(self) -> None:
         fm = FixtureMap()
-        corners = fm.by_group("corners")
-        assert len(corners) == 4
-        assert all(f.fixture_type == FixtureType.PAR for f in corners)
+        par_all = fm.by_group("par_all")
+        assert len(par_all) == 8
+        assert all(f.fixture_type == FixtureType.PAR for f in par_all)
+        strobe_corners = fm.by_group("strobe_corners")
+        assert len(strobe_corners) == 4
+        assert all(f.fixture_type == FixtureType.STROBE for f in strobe_corners)
 
     def test_left_right_partition(self) -> None:
         fm = FixtureMap()

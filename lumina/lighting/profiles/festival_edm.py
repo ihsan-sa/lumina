@@ -3,31 +3,36 @@
 Core philosophy: THE BUILD-DROP CYCLE — everything serves tension or release.
 
 Lighting language:
-- Build-up: Monochromatic start, intensity rises linearly over 16-32 bars.
-  Colors shift cool (blue/cyan) to warm (gold/white). Strobe frequency
-  increases from off to rapid. Pars fade in one by one.
-- Drop: FULL EXPLOSION. Every fixture at maximum. Rapid color cycling
-  across pars, all strobes firing at max. UV at full. The room turns into
-  a wall of light for 4-8 bars.
-- Groove: Rhythmic patterns locked to kick. 4-bar color cycles through a
-  warm palette. Pars sweep left-to-right on beat phase. Strobes pulse on
-  downbeats. Chase patterns during sustained grooves.
-- Breakdown: Near-blackout. Single color wash (blue or cyan) on one par,
-  slow breathing synced to bar. Everything else dark.
-- Trance variant: Longer builds (32-64 bars), emotional release instead
-  of violent explosion. Warm white/gold on drop instead of rapid cycling.
-  Smooth expansion center-to-outward.
-- Spatial: Pars sweep spatially on beat, strobes alternate L/R during
-  builds, chase patterns during grooves.
+- Build-up: chase_lr on pars (slow→fast, blue→cyan→white) + stutter on
+  1 strobe (8th→16th→32nd over 16 bars) + converge as build peaks.
+- Drop: diverge(pars, full white, 300ms) → chase_lr(pars, fast, rapid
+  color cycling) + strobe_burst on every kick + overhead bars full white.
+- Groove: alternate(pars, 2 colors on beat) + chase_lr(overhead, slow
+  4-bar cycle).
+- Breakdown: spotlight_isolate(1 par, blue) + breathe(4-bar period).
+  Everything else off.
+- LED bars: full white during drops, warm wash during groove.
+- Laser: slow pattern in build, fast during drop, off in breakdown.
 """
 
 from __future__ import annotations
 
-import math
-
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
+from lumina.lighting.patterns import (
+    alternate,
+    breathe,
+    chase_lr,
+    converge,
+    diverge,
+    make_command,
+    select_active_fixtures,
+    spotlight_isolate,
+    strobe_burst,
+    stutter,
+    wash_hold,
+)
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
@@ -40,20 +45,15 @@ from lumina.lighting.profiles.base import (
 
 # ─── Festival palette ────────────────────────────────────────────────
 
-# Cool end (build starts here)
 ICE_BLUE = Color(0.0, 0.3, 1.0, 0.1)
 CYAN = Color(0.0, 0.8, 1.0, 0.1)
 DEEP_BLUE = Color(0.0, 0.0, 1.0, 0.0)
-
-# Warm end (build peaks here)
 GOLD = Color(1.0, 0.75, 0.0, 0.4)
 HOT_WHITE = Color(1.0, 0.9, 0.7, 1.0)
 AMBER = Color(1.0, 0.5, 0.0, 0.2)
+BREAKDOWN_BLUE = Color(0.0, 0.25, 1.0, 0.0)
 
-# Drop cycling palette (high saturation, full value)
-_DROP_HUES = [0.0, 0.08, 0.15, 0.55, 0.65, 0.75, 0.85]
-
-# Groove palette (warm club colors, 4-bar cycle — white at 30-40%)
+# Groove palette (warm club colors, 4-bar cycle)
 _GROOVE_COLORS = [
     Color(1.0, 0.2, 0.0, 0.35),   # warm red-orange
     Color(1.0, 0.67, 0.0, 0.40),  # amber-gold
@@ -61,18 +61,13 @@ _GROOVE_COLORS = [
     Color(0.6, 0.0, 1.0, 0.30),   # purple
 ]
 
-# Breakdown (max channel at 1.0 for blue)
-BREAKDOWN_BLUE = Color(0.0, 0.25, 1.0, 0.0)
-
-# UV levels
-_UV_BUILD_BASE = 40
-_UV_DROP = 255
-_UV_GROOVE = 120
-_UV_BREAKDOWN = 30
-
 # Timing
-_BUILD_BARS_SHORT = 16  # normal EDM build
-_BUILD_BARS_LONG = 32   # trance build
+_BUILD_BARS_SHORT = 16
+
+# Laser patterns
+_LASER_OFF = 0
+_LASER_SLOW = 2
+_LASER_FAST = 8
 
 
 class FestivalEdmProfile(BaseProfile):
@@ -92,7 +87,8 @@ class FestivalEdmProfile(BaseProfile):
         super().__init__(fixture_map)
         self._pars = self._map.by_type(FixtureType.PAR)
         self._strobes = self._map.by_type(FixtureType.STROBE)
-        self._uvs = self._map.by_type(FixtureType.UV)
+        self._led_bars = self._map.by_type(FixtureType.LED_BAR)
+        self._lasers = self._map.by_type(FixtureType.LASER)
         self._pars_lr = self._map.sorted_by_x(self._pars)
 
         # State
@@ -107,11 +103,10 @@ class FestivalEdmProfile(BaseProfile):
             state: Current audio analysis frame.
 
         Returns:
-            One FixtureCommand per fixture.
+            One FixtureCommand per fixture (15 total).
         """
         segment = state.segment
 
-        # Track segment transitions
         if segment != self._last_segment:
             if segment == "drop":
                 self._drop_frame = 0
@@ -120,7 +115,7 @@ class FestivalEdmProfile(BaseProfile):
         if segment == "drop":
             self._drop_frame += 1
 
-        # ── Pre-drop build: rising tension ──────────────────────
+        # Pre-drop build
         if state.drop_probability > 0.4 and segment != "drop":
             self._build_start_time = (
                 state.timestamp
@@ -129,146 +124,176 @@ class FestivalEdmProfile(BaseProfile):
             )
             return self._build(state)
 
-        # Reset build tracking when not building
         if state.drop_probability <= 0.4 and segment != "drop":
             self._build_start_time = -1.0
 
-        # ── Drop: full explosion ────────────────────────────────
         if segment == "drop":
             return self._drop(state)
 
-        # ── Breakdown / bridge: near-blackout breathing ─────────
         if segment in ("breakdown", "bridge"):
             return self._breakdown(state)
 
-        # ── Intro / outro: minimal ──────────────────────────────
         if segment in ("intro", "outro"):
             return self._intro_outro(state)
 
-        # ── Chorus / verse: groove patterns ─────────────────────
         return self._groove(state)
 
     # ─── Segment handlers ──────────────────────────────────────────
 
     def _build(self, state: MusicState) -> list[FixtureCommand]:
-        """Build-up: monochromatic start → intensity and strobe ramp.
+        """Build-up: chase_lr (slow→fast) + stutter on strobe + converge.
 
-        Colors shift cool→warm. Pars fade in sequentially. Strobe
-        frequency rises from 0 to rapid. Build duration adapts:
-        16 bars for EDM, up to 32 for trance-leaning tracks.
+        Colors shift blue→cyan→white. Fixture count escalates. Strobe
+        stutter accelerates from 8th notes to 32nd notes over build.
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Compute build progress 0→1
         bpm = max(60.0, state.bpm)
         bar_duration = 60.0 / bpm * 4.0
         dt = max(0.0, state.timestamp - self._build_start_time)
-        build_bars = _BUILD_BARS_SHORT
-        ramp = min(1.0, dt / (build_bars * bar_duration))
+        ramp = min(1.0, dt / (_BUILD_BARS_SHORT * bar_duration))
 
-        # Color: cool blue → warm gold
-        color = lerp_color(ICE_BLUE, GOLD, ramp)
+        # Color: blue → cyan → white
+        color = lerp_color(ICE_BLUE, HOT_WHITE, ramp)
 
-        # Intensity: 0.30 → 1.0
-        intensity = 0.30 + ramp * 0.70
+        # Fixture escalation: start with few pars, expand to all
+        active_pars = select_active_fixtures(
+            self._pars, ramp,
+            low_count=2, mid_count=5, mid_threshold=0.3, high_threshold=0.7,
+        )
 
-        # Pars: fade in one by one over the build
-        n_pars = len(self._pars_lr)
-        active_count = max(1, math.ceil(ramp * n_pars))
-        for i, f in enumerate(self._pars_lr):
-            if i < active_count:
-                # Earlier pars slightly brighter
-                par_intensity = intensity * (1.0 - 0.1 * (i / max(n_pars - 1, 1)))
-                commands[f.fixture_id] = self._cmd(f, color, par_intensity)
-            else:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+        # Chase with increasing speed
+        chase_speed = 0.5 + ramp * 2.0
+        par_cmds = chase_lr(
+            active_pars, state, state.timestamp, color,
+            speed=chase_speed, width=0.35, intensity=0.30 + ramp * 0.70,
+        )
+        commands.update(par_cmds)
 
-        # Strobes: rate ramps from off → rapid, alternating L/R below 70%
-        strobe_rate = int(ramp * 220)
-        strobe_int = int(ramp * 200)
-        if ramp < 0.7:
-            left_on = state.beat_phase < 0.5
-            for i, f in enumerate(self._strobes):
-                if (i % 2 == 0) == left_on:
-                    commands[f.fixture_id] = self._cmd(
-                        f, color, strobe_rate=strobe_rate, strobe_intensity=strobe_int,
-                    )
+        # At high ramp, add converge overlay
+        if ramp > 0.6:
+            converge_cmds = converge(
+                active_pars, state, state.timestamp, color,
+                intensity=ramp * 0.5,
+            )
+            for fid, cmd in converge_cmds.items():
+                if fid in commands:
+                    existing = commands[fid]
+                    if cmd.red + cmd.green + cmd.blue > existing.red + existing.green + existing.blue:
+                        commands[fid] = cmd
                 else:
-                    commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
-        else:
-            # All synced at high tension
-            for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
-                    f, color, strobe_rate=strobe_rate, strobe_intensity=strobe_int,
-                )
+                    commands[fid] = cmd
 
-        # UV: ramp from base to medium
-        uv_level = int(_UV_BUILD_BASE + ramp * (_UV_GROOVE - _UV_BUILD_BASE))
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=uv_level)
+        # Blackout inactive pars
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # Strobes: stutter with accelerating rate
+        stutter_rate = 2.0 + ramp * 6.0
+        if self._strobes:
+            strobe_cmds = stutter(
+                self._strobes[:1], state, state.timestamp, color,
+                rate=stutter_rate, intensity=ramp,
+            )
+            commands.update(strobe_cmds)
+            for f in self._strobes[1:]:
+                if ramp < 0.7:
+                    commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+                else:
+                    commands.update(
+                        stutter([f], state, state.timestamp, color,
+                                rate=stutter_rate, intensity=ramp)
+                    )
+
+        # LED bars: activate at ~50% ramp
+        if ramp > 0.5:
+            bar_intensity = (ramp - 0.5) * 2.0
+            bar_cmds = wash_hold(
+                self._led_bars, state, state.timestamp, color,
+                intensity=bar_intensity * 0.6,
+            )
+            commands.update(bar_cmds)
+        else:
+            for f in self._led_bars:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # Laser: activate in final 25%
+        for f in self._lasers:
+            sp = _LASER_SLOW if ramp > 0.75 else _LASER_OFF
+            commands[f.fixture_id] = make_command(f, BLACK, special=sp)
 
         return self._merge_commands(commands)
 
     def _drop(self, state: MusicState) -> list[FixtureCommand]:
-        """Drop: FULL EXPLOSION — rapid color cycling, all strobes max.
+        """Drop: diverge flash → chase_lr fast + strobe_burst on kicks.
 
-        First 300ms: warm white flash on everything. Then rapid hue
-        cycling across pars with all strobes firing continuously.
-        Trance variant uses sustained warm white/gold instead of cycling.
+        First 300ms: diverge with full white. Then rapid color cycling
+        chase on pars + strobe_burst on every kick + overhead bars full.
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Detect trance-leaning: lower energy drops are more trance
         is_trance = state.energy < 0.75
 
-        # Initial flash (300ms ≈ 18 frames at 60fps)
+        # Initial flash (300ms ≈ 18 frames)
         if self._drop_frame <= 18:
             flash_color = GOLD if is_trance else HOT_WHITE
-            for f in self._pars:
-                commands[f.fixture_id] = self._cmd(f, flash_color, intensity=1.0)
-            for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
-                    f, HOT_WHITE, strobe_rate=255, strobe_intensity=255,
-                )
-            for f in self._uvs:
-                commands[f.fixture_id] = self._cmd(f, special=_UV_DROP)
+            par_cmds = diverge(
+                self._pars, state, state.timestamp, flash_color, intensity=1.0,
+            )
+            commands.update(par_cmds)
+            burst = strobe_burst(
+                self._strobes, state, state.timestamp, HOT_WHITE,
+            )
+            commands.update(burst)
+            bar_cmds = wash_hold(
+                self._led_bars, state, state.timestamp, flash_color, intensity=1.0,
+            )
+            commands.update(bar_cmds)
+            for f in self._lasers:
+                commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_FAST)
             return self._merge_commands(commands)
 
         if is_trance:
-            # Trance: sustained warm glow expanding center→outward
-            expand_phase = min(1.0, (self._drop_frame - 18) / 60.0)
-            expand = self._focus_expand(expand_phase, GOLD, intensity=0.9)
-            commands.update(expand)
+            par_cmds = diverge(
+                self._pars, state, state.timestamp, GOLD, intensity=0.9,
+            )
+            commands.update(par_cmds)
         else:
-            # EDM: rapid color cycling — each par gets a different hue
-            # White at 40% adds perceived brightness during drops
-            cycle_speed = state.timestamp * 4.0  # 4 full cycles per second
+            # Rapid color cycling per par
+            cycle_speed = state.timestamp * 4.0
             n_pars = len(self._pars_lr)
             for i, f in enumerate(self._pars_lr):
                 hue_offset = i / max(n_pars, 1)
                 hue = (cycle_speed + hue_offset) % 1.0
                 color = color_from_hsv(hue, 1.0, 1.0)
                 color = Color(color.r, color.g, color.b, w=0.40)
-                commands[f.fixture_id] = self._cmd(f, color, intensity=1.0)
+                commands[f.fixture_id] = make_command(f, color, intensity=1.0)
 
-        # Strobes: continuous max
-        for f in self._strobes:
-            commands[f.fixture_id] = self._cmd(
-                f, HOT_WHITE, strobe_rate=255, strobe_intensity=255,
+        # Strobes: burst on kicks/beats
+        if state.onset_type == "kick" or state.is_beat:
+            burst = strobe_burst(
+                self._strobes, state, state.timestamp, HOT_WHITE,
             )
+            commands.update(burst)
+        else:
+            for f in self._strobes:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # UV max
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_DROP)
+        # LED bars full white
+        bar_cmds = wash_hold(
+            self._led_bars, state, state.timestamp, HOT_WHITE, intensity=1.0,
+        )
+        commands.update(bar_cmds)
+
+        # Laser fast
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_FAST)
 
         return self._merge_commands(commands)
 
     def _groove(self, state: MusicState) -> list[FixtureCommand]:
-        """Groove: kick-locked rhythm, 4-bar color cycle, L→R par sweep.
-
-        Pars sweep left-to-right on beat phase. Colors cycle through
-        warm palette every 4 bars. Strobes pulse on downbeats.
-        """
+        """Groove: alternate on pars + chase on overhead bars."""
         commands: dict[int, FixtureCommand] = {}
 
         bpm = max(60.0, state.bpm)
@@ -282,82 +307,99 @@ class FestivalEdmProfile(BaseProfile):
         next_idx = (color_idx + 1) % n_colors
         blend_t = (cycle_pos * n_colors) % 1.0
         groove_color = lerp_color(_GROOVE_COLORS[color_idx], _GROOVE_COLORS[next_idx], blend_t)
+        groove_color_b = lerp_color(
+            _GROOVE_COLORS[(color_idx + 2) % n_colors],
+            _GROOVE_COLORS[(next_idx + 2) % n_colors], blend_t,
+        )
 
-        # Pars: sweep L→R on beat phase (min 50% in groove)
         base_intensity = 0.50 + energy_brightness(state.energy) * 0.35
-        # Kick pulse: brief brightness boost
         if state.onset_type == "kick":
             base_intensity = min(1.0, base_intensity + 0.15)
 
-        sweep = self._sweep_x(
-            state.beat_phase, groove_color, width=0.4, intensity=base_intensity,
+        # Fixture escalation
+        active_pars = select_active_fixtures(
+            self._pars, state.energy,
+            low_count=4, mid_count=6, high_threshold=0.8,
         )
-        commands.update(sweep)
 
-        # Strobes: pulse on downbeats only
+        par_cmds = alternate(
+            active_pars, state, state.timestamp, groove_color,
+            color_b=groove_color_b, intensity=base_intensity,
+        )
+        commands.update(par_cmds)
+
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # LED bars: slow chase
+        bar_cmds = chase_lr(
+            self._led_bars, state, state.timestamp, groove_color,
+            speed=0.25, width=0.6, intensity=0.6,
+        )
+        commands.update(bar_cmds)
+
+        # Strobes: pulse on downbeats
         if state.is_downbeat:
-            for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
-                    f, groove_color, strobe_rate=180, strobe_intensity=200,
-                )
+            burst = strobe_burst(
+                self._strobes, state, state.timestamp, groove_color,
+                rate=180, burst_intensity=200,
+            )
+            commands.update(burst)
         elif state.is_beat:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(
+                commands[f.fixture_id] = make_command(
                     f, groove_color, strobe_rate=80, strobe_intensity=100,
                 )
         else:
             for f in self._strobes:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # UV steady
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_GROOVE)
+        # Laser off
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
 
     def _breakdown(self, state: MusicState) -> list[FixtureCommand]:
-        """Breakdown: near-blackout, single par breathing a cool wash.
-
-        One par (front-left) breathes a blue wash synced to bar phase.
-        Everything else is dark. Creates anticipation for the next build.
-        """
+        """Breakdown: spotlight on 1 par with 4-bar breathing."""
         commands: dict[int, FixtureCommand] = {}
 
-        # Breathing intensity on bar phase (10-20% range)
-        breath = sine_pulse(state.bar_phase)
-        intensity = 0.10 + breath * 0.12
+        # All pars off
+        par_cmds = spotlight_isolate(
+            self._pars, state, state.timestamp, BREAKDOWN_BLUE,
+            target_index=0, intensity=0.0, dim_others=0.0,
+        )
+        commands.update(par_cmds)
 
-        # Only the first par
-        for i, f in enumerate(self._pars):
-            if i == 0:
-                commands[f.fixture_id] = self._cmd(f, BREAKDOWN_BLUE, intensity=intensity)
-            else:
-                commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
+        # Override first par with breathing
+        if self._pars:
+            breath_cmds = breathe(
+                self._pars[:1], state, state.timestamp, BREAKDOWN_BLUE,
+                min_intensity=0.10, max_intensity=0.22, period_bars=4.0,
+            )
+            commands.update(breath_cmds)
 
-        # Strobes off
-        for f in self._strobes:
-            commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
-
-        # UV very low
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_BREAKDOWN)
+        for f in self._strobes + self._led_bars:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
 
     def _intro_outro(self, state: MusicState) -> list[FixtureCommand]:
-        """Intro/outro: slow blue fade on pars, no strobes."""
+        """Intro/outro: slow blue breathe on pars."""
         commands: dict[int, FixtureCommand] = {}
 
-        breath = sine_pulse(state.bar_phase, power=0.5)
-        intensity = 0.25 + breath * 0.15
+        par_cmds = breathe(
+            self._pars, state, state.timestamp, DEEP_BLUE,
+            min_intensity=0.20, max_intensity=0.35, period_bars=2.0,
+        )
+        commands.update(par_cmds)
 
-        for f in self._pars:
-            commands[f.fixture_id] = self._cmd(f, DEEP_BLUE, intensity=intensity)
-
-        for f in self._strobes:
-            commands[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
-
-        for f in self._uvs:
-            commands[f.fixture_id] = self._cmd(f, special=_UV_BREAKDOWN)
+        for f in self._strobes + self._led_bars:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
 
         return self._merge_commands(commands)
