@@ -17,7 +17,7 @@ import contextlib
 import logging
 import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,12 +31,11 @@ from lumina.audio.models import MusicState
 from lumina.audio.onset_detector import OnsetDetector, OnsetEvent
 from lumina.audio.segment_classifier import SegmentClassifier, SegmentFrame
 from lumina.audio.vocal_detector import VocalDetector, VocalFrame
-from lumina.control.protocol import FixtureCommand, encode_packet
+from lumina.control.protocol import encode_packet
+from lumina.lighting.engine import LightingEngine
 from lumina.web.server import LuminaServer
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_FIXTURE_IDS = list(range(1, 9))
 
 
 @dataclass
@@ -51,7 +50,6 @@ class AppConfig:
         fps: Target output frame rate.
         sr: Sample rate for audio analysis.
         udp_target: Optional "IP:PORT" for physical fixture UDP output.
-        fixture_ids: List of fixture IDs to generate commands for.
     """
 
     mode: str = "file"
@@ -61,7 +59,6 @@ class AppConfig:
     fps: int = 60
     sr: int = 44100
     udp_target: str | None = None
-    fixture_ids: list[int] = field(default_factory=lambda: list(DEFAULT_FIXTURE_IDS))
 
 
 def _assemble_music_state(
@@ -108,74 +105,6 @@ def _assemble_music_state(
     )
 
 
-def generate_demo_commands(
-    state: MusicState,
-    fixture_ids: list[int],
-) -> list[FixtureCommand]:
-    """Generate stub lighting commands from a MusicState.
-
-    Simple energy/beat-reactive mapping as a placeholder until the real
-    lighting engine (lumina.lighting.engine) is implemented.
-
-    Args:
-        state: Current music state.
-        fixture_ids: Fixture IDs to generate commands for.
-
-    Returns:
-        One FixtureCommand per fixture ID.
-    """
-    commands: list[FixtureCommand] = []
-    e = state.energy
-
-    for fid in fixture_ids:
-        if fid <= 4:
-            # RGBW Pars: energy-driven color gradient (blue → purple → red)
-            red = int(min(255, e * 2 * 255))
-            green = 0
-            blue = int(min(255, (1.0 - e) * 255))
-            white = int(e * 128)
-            dimmer = int(e * 255)
-            commands.append(
-                FixtureCommand(
-                    fixture_id=fid,
-                    red=red,
-                    green=green,
-                    blue=blue,
-                    white=white,
-                    special=dimmer,
-                )
-            )
-        elif fid <= 6:
-            # Strobes: fire on beats
-            if state.is_downbeat:
-                rate = 250
-                intensity = 255
-            elif state.is_beat:
-                rate = 180
-                intensity = int(e * 200)
-            else:
-                rate = 0
-                intensity = 0
-            commands.append(
-                FixtureCommand(
-                    fixture_id=fid,
-                    strobe_rate=rate,
-                    strobe_intensity=intensity,
-                )
-            )
-        else:
-            # UV bars: sub-bass driven
-            uv_level = int(state.sub_bass_energy * 255)
-            commands.append(
-                FixtureCommand(
-                    fixture_id=fid,
-                    special=uv_level,
-                )
-            )
-
-    return commands
-
-
 class LuminaApp:
     """Main LUMINA application.
 
@@ -186,6 +115,7 @@ class LuminaApp:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._server = LuminaServer(host=config.host, port=config.port)
+        self._engine = LightingEngine()
         self._music_states: list[MusicState] = []
         self._frame_index = 0
         self._playing = True
@@ -311,7 +241,7 @@ class LuminaApp:
 
             if self._playing:
                 state = self._music_states[self._frame_index]
-                commands = generate_demo_commands(state, self._config.fixture_ids)
+                commands = self._engine.generate(state)
 
                 # Push to WebSocket server (drop if full)
                 with contextlib.suppress(asyncio.QueueFull):

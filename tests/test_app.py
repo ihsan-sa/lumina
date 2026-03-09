@@ -1,11 +1,10 @@
-"""Tests for LUMINA app entry point — MusicState assembly, demo lighting, and CLI."""
+"""Tests for LUMINA app entry point — MusicState assembly and CLI."""
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
 
-from lumina.app import AppConfig, _assemble_music_state, generate_demo_commands, parse_args
+from lumina.app import AppConfig, _assemble_music_state, parse_args
 from lumina.audio.beat_detector import BeatInfo
 from lumina.audio.drop_predictor import DropFrame
 from lumina.audio.energy_tracker import EnergyFrame
@@ -175,91 +174,6 @@ class TestMusicStateAssembly:
             assert state.onset_type == onset_type
 
 
-# ── TestDemoLightingEngine ──────────────────────────────────────
-
-
-class TestDemoLightingEngine:
-    """Tests for generate_demo_commands."""
-
-    def test_generates_commands_for_all_fixtures(self) -> None:
-        """One command per fixture ID."""
-        state = MusicState(energy=0.5)
-        ids = [1, 2, 3, 4, 5, 6, 7, 8]
-        commands = generate_demo_commands(state, ids)
-        assert len(commands) == 8
-        assert [c.fixture_id for c in commands] == ids
-
-    def test_high_energy_bright_pars(self) -> None:
-        """High energy produces bright par output."""
-        state = MusicState(energy=0.9)
-        commands = generate_demo_commands(state, [1])
-        cmd = commands[0]
-        assert cmd.red > 100
-        assert cmd.special > 200  # dimmer
-
-    def test_low_energy_dim_pars(self) -> None:
-        """Low energy produces dim par output."""
-        state = MusicState(energy=0.1)
-        commands = generate_demo_commands(state, [1])
-        cmd = commands[0]
-        assert cmd.special < 50
-
-    def test_beat_triggers_strobe(self) -> None:
-        """is_beat=True triggers strobe on fixtures 5-6."""
-        state = MusicState(energy=0.7, is_beat=True)
-        commands = generate_demo_commands(state, [5])
-        cmd = commands[0]
-        assert cmd.strobe_rate == 180
-        assert cmd.strobe_intensity > 0
-
-    def test_downbeat_max_strobe(self) -> None:
-        """is_downbeat=True triggers maximum strobe."""
-        state = MusicState(energy=0.8, is_beat=True, is_downbeat=True)
-        commands = generate_demo_commands(state, [5])
-        cmd = commands[0]
-        assert cmd.strobe_rate == 250
-        assert cmd.strobe_intensity == 255
-
-    def test_no_beat_strobe_off(self) -> None:
-        """No beat means strobe is off."""
-        state = MusicState(energy=0.5, is_beat=False, is_downbeat=False)
-        commands = generate_demo_commands(state, [5])
-        cmd = commands[0]
-        assert cmd.strobe_rate == 0
-        assert cmd.strobe_intensity == 0
-
-    def test_sub_bass_drives_uv(self) -> None:
-        """UV bar special channel matches sub_bass_energy."""
-        state = MusicState(sub_bass_energy=0.8)
-        commands = generate_demo_commands(state, [7])
-        cmd = commands[0]
-        assert cmd.special == int(0.8 * 255)  # 204
-
-    def test_all_values_in_range(self) -> None:
-        """Fuzz test: all output values are within 0-255."""
-        rng = random.Random(42)
-        for _ in range(100):
-            state = MusicState(
-                energy=rng.random(),
-                is_beat=rng.random() > 0.7,
-                is_downbeat=rng.random() > 0.9,
-                sub_bass_energy=rng.random(),
-            )
-            commands = generate_demo_commands(state, [1, 2, 3, 4, 5, 6, 7, 8])
-            for cmd in commands:
-                for field_name in (
-                    "red",
-                    "green",
-                    "blue",
-                    "white",
-                    "strobe_rate",
-                    "strobe_intensity",
-                    "special",
-                ):
-                    val = getattr(cmd, field_name)
-                    assert 0 <= val <= 255, f"{field_name}={val} out of range"
-
-
 # ── TestAppConfig ───────────────────────────────────────────────
 
 
@@ -276,7 +190,6 @@ class TestAppConfig:
         assert config.fps == 60
         assert config.sr == 44100
         assert config.udp_target is None
-        assert config.fixture_ids == [1, 2, 3, 4, 5, 6, 7, 8]
 
     def test_parse_file_mode(self) -> None:
         """Parse --mode file --file song.mp3."""
