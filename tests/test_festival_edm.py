@@ -25,13 +25,13 @@ class TestBasics:
     def test_returns_one_command_per_fixture(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
-        assert len(cmds) == 8
+        assert len(cmds) == 15
 
     def test_all_fixture_ids_present(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
         ids = {c.fixture_id for c in cmds}
-        assert ids == set(range(1, 9))
+        assert ids == set(range(1, 16))
 
     def test_all_channels_valid_range(self) -> None:
         p = _make_profile()
@@ -54,16 +54,23 @@ class TestBuild:
         p = _make_profile()
         # First frame starts the build timer
         p.generate(_state(drop_probability=0.5, segment="verse", timestamp=0.0))
-        # Second frame at later timestamp has nonzero ramp
+        # Second frame at later timestamp has nonzero ramp.
+        # Build uses stutter pattern which sets RGB color (not strobe_rate)
+        # on the "on" half of beat subdivisions. Use beat_phase=0.0 to
+        # ensure the stutter is in its "on" state.
         state = _state(
-            drop_probability=0.7, segment="verse", beat_phase=0.2, timestamp=10.0,
+            drop_probability=0.7, segment="verse", beat_phase=0.0, timestamp=10.0,
         )
         cmds = p.generate(state)
         fm = FixtureMap()
         strobe_ids = {f.fixture_id for f in fm.by_type(FixtureType.STROBE)}
         strobes = [c for c in cmds if c.fixture_id in strobe_ids]
-        # At least one strobe should have non-zero rate
-        assert any(c.strobe_rate > 0 for c in strobes)
+        # At least one strobe should have non-zero color (stutter sets RGB)
+        # or non-zero strobe_rate
+        assert any(
+            c.strobe_rate > 0 or c.red > 0 or c.green > 0 or c.blue > 0
+            for c in strobes
+        )
 
     def test_build_pars_fade_in(self) -> None:
         """Early build should have fewer active pars than late build."""

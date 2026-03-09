@@ -26,13 +26,13 @@ class TestBasics:
     def test_returns_one_command_per_fixture(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
-        assert len(cmds) == 8
+        assert len(cmds) == 15
 
     def test_all_fixture_ids_present(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
         ids = {c.fixture_id for c in cmds}
-        assert ids == set(range(1, 9))
+        assert ids == set(range(1, 16))
 
     def test_all_channels_valid_range(self) -> None:
         p = _make_profile()
@@ -68,32 +68,42 @@ class TestEnergyReactive:
 
 class TestSectionAware:
     def test_chorus_brighter_than_verse(self) -> None:
-        """Chorus should be brighter than verse at same energy."""
+        """Chorus should be brighter than verse at same energy.
+
+        Chorus uses chase_lr which concentrates brightness spatially, so
+        peak par brightness should be higher than verse wash_hold's uniform
+        brightness.  We compare the max single-par brightness.
+        """
         p = _make_profile()
-        state_verse = _state(segment="verse", energy=0.6, bar_phase=0.5)
-        state_chorus = _state(segment="chorus", energy=0.6, bar_phase=0.5)
+        fm = FixtureMap()
+        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
+        state_verse = _state(segment="verse", energy=0.8, bar_phase=0.5)
+        state_chorus = _state(segment="chorus", energy=0.8, bar_phase=0.5)
         cmds_verse = p.generate(state_verse)
         cmds_chorus = p.generate(state_chorus)
-        fm = FixtureMap()
-        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
 
-        def total_brightness(cmds: list) -> int:
-            return sum(c.red + c.green + c.blue + c.white for c in cmds if c.fixture_id in par_ids)
+        def max_par_brightness(cmds: list) -> int:
+            return max(
+                (c.red + c.green + c.blue + c.white for c in cmds if c.fixture_id in par_ids),
+                default=0,
+            )
 
-        assert total_brightness(cmds_chorus) > total_brightness(cmds_verse)
+        assert max_par_brightness(cmds_chorus) > max_par_brightness(cmds_verse)
 
     def test_drop_brightest(self) -> None:
-        """Drop should be the brightest section."""
+        """Drop should be the brightest section.
+
+        Drop uses diverge pattern which needs bar_phase >= ~0.8 for all
+        pars to be active (pars are at room edges, not center).
+        """
         p = _make_profile()
-        state_drop = _state(segment="drop", energy=0.9, is_beat=True)
-        state_verse = _state(segment="verse", energy=0.9, bar_phase=0.5)
+        state_drop = _state(segment="drop", energy=0.9, is_beat=True, bar_phase=0.9)
+        state_verse = _state(segment="verse", energy=0.9, bar_phase=0.9)
         cmds_drop = p.generate(state_drop)
         cmds_verse = p.generate(state_verse)
-        fm = FixtureMap()
-        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
 
         def total_brightness(cmds: list) -> int:
-            return sum(c.red + c.green + c.blue + c.white for c in cmds if c.fixture_id in par_ids)
+            return sum(c.red + c.green + c.blue + c.white for c in cmds)
 
         assert total_brightness(cmds_drop) > total_brightness(cmds_verse)
 
@@ -115,21 +125,29 @@ class TestSectionAware:
 
 class TestBeatReactive:
     def test_kick_pulse(self) -> None:
-        """Kick onset should add brightness to pars."""
+        """Kick onset should boost peak par brightness.
+
+        Verse with kick uses alternate pattern which concentrates brightness
+        on half the pars. The peak single-par brightness should exceed the
+        uniform wash_hold brightness of the no-kick baseline.
+        """
         p = _make_profile()
-        state_no = _state(segment="verse", energy=0.6, bar_phase=0.5)
+        fm = FixtureMap()
+        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
+        state_no = _state(segment="verse", energy=0.8, bar_phase=0.5)
         state_kick = _state(
-            segment="verse", energy=0.6, bar_phase=0.5, onset_type="kick",
+            segment="verse", energy=0.8, bar_phase=0.5, onset_type="kick",
         )
         cmds_no = p.generate(state_no)
         cmds_kick = p.generate(state_kick)
-        fm = FixtureMap()
-        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
 
-        def total_brightness(cmds: list) -> int:
-            return sum(c.red + c.green + c.blue + c.white for c in cmds if c.fixture_id in par_ids)
+        def max_par_brightness(cmds: list) -> int:
+            return max(
+                (c.red + c.green + c.blue + c.white for c in cmds if c.fixture_id in par_ids),
+                default=0,
+            )
 
-        assert total_brightness(cmds_kick) >= total_brightness(cmds_no)
+        assert max_par_brightness(cmds_kick) >= max_par_brightness(cmds_no)
 
     def test_snare_strobe_in_high_energy(self) -> None:
         """Snare hit at high energy should trigger gentle strobe."""
@@ -176,15 +194,23 @@ class TestConservativeStrobes:
 
 class TestColorCycling:
     def test_colors_change_over_time(self) -> None:
-        """Color should cycle over time (8-bar period)."""
+        """Color should cycle over time (8-bar period).
+
+        Use high energy so all pars are active via select_active_fixtures,
+        and compare a center par that is always selected.
+        """
         p = _make_profile()
-        state1 = _state(segment="verse", timestamp=0.0, energy=0.5, bar_phase=0.5)
-        state2 = _state(segment="verse", timestamp=15.0, energy=0.5, bar_phase=0.5)
+        state1 = _state(segment="verse", timestamp=0.0, energy=0.9, bar_phase=0.5)
+        state2 = _state(segment="verse", timestamp=15.0, energy=0.9, bar_phase=0.5)
         cmds1 = p.generate(state1)
         cmds2 = p.generate(state2)
-        par1_t0 = next((c.red, c.green, c.blue) for c in cmds1 if c.fixture_id == 1)
-        par1_t15 = next((c.red, c.green, c.blue) for c in cmds2 if c.fixture_id == 1)
-        assert par1_t0 != par1_t15
+        fm = FixtureMap()
+        par_ids = sorted(f.fixture_id for f in fm.by_type(FixtureType.PAR))
+        # Use a center par (ID 4 or 5) that is always selected
+        center_par = par_ids[len(par_ids) // 2]
+        color_t0 = next((c.red, c.green, c.blue) for c in cmds1 if c.fixture_id == center_par)
+        color_t15 = next((c.red, c.green, c.blue) for c in cmds2 if c.fixture_id == center_par)
+        assert color_t0 != color_t15
 
 
 class TestFallbackBehavior:

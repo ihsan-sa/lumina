@@ -25,13 +25,13 @@ class TestBasics:
     def test_returns_one_command_per_fixture(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
-        assert len(cmds) == 8
+        assert len(cmds) == 15
 
     def test_all_fixture_ids_present(self) -> None:
         p = _make_profile()
         cmds = p.generate(_state())
         ids = {c.fixture_id for c in cmds}
-        assert ids == set(range(1, 9))
+        assert ids == set(range(1, 16))
 
     def test_all_channels_valid_range(self) -> None:
         p = _make_profile()
@@ -87,11 +87,13 @@ class TestNeverHarshWhite:
 class TestVerse:
     def test_vocal_energy_drives_brightness(self) -> None:
         """Higher vocal energy should produce brighter pars."""
-        p = _make_profile()
+        # Use fresh profiles to avoid crossfade state contamination
+        p_low = _make_profile()
+        p_high = _make_profile()
         state_low = _state(segment="verse", vocal_energy=0.1)
         state_high = _state(segment="verse", vocal_energy=0.9)
-        cmds_low = p.generate(state_low)
-        cmds_high = p.generate(state_high)
+        cmds_low = p_low.generate(state_low)
+        cmds_high = p_high.generate(state_high)
         fm = FixtureMap()
         par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
 
@@ -120,7 +122,7 @@ class TestVerse:
         )
         cmds = p.generate(state)
         # Should still produce valid commands
-        assert len(cmds) == 8
+        assert len(cmds) == 15
 
 
 class TestChorus:
@@ -159,11 +161,15 @@ class TestChorus:
 class TestDrop:
     def test_drop_higher_intensity_than_verse(self) -> None:
         """Drop should be significantly brighter than verse."""
-        p = _make_profile()
-        state_verse = _state(segment="verse", energy=0.5, vocal_energy=0.5)
-        state_drop = _state(segment="drop", energy=0.9, is_beat=True)
-        cmds_verse = p.generate(state_verse)
-        cmds_drop = p.generate(state_drop)
+        # Use fresh profiles to avoid crossfade state contamination.
+        # Drop uses diverge which needs bar_phase >= ~0.8 for all pars
+        # to be active (pars are positioned at room edges, not center).
+        p_verse = _make_profile()
+        p_drop = _make_profile()
+        state_verse = _state(segment="verse", energy=0.5, vocal_energy=0.5, bar_phase=0.8)
+        state_drop = _state(segment="drop", energy=0.9, is_beat=True, bar_phase=0.8)
+        cmds_verse = p_verse.generate(state_verse)
+        cmds_drop = p_drop.generate(state_drop)
         fm = FixtureMap()
         par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
 
@@ -211,15 +217,20 @@ class TestBreakdown:
 class TestColorDrift:
     def test_wash_changes_over_time(self) -> None:
         """Color wash should produce different colors at different times."""
-        p = _make_profile()
-        state1 = _state(segment="verse", vocal_energy=0.5, timestamp=0.0)
-        state2 = _state(segment="verse", vocal_energy=0.5, timestamp=15.0)
-        cmds1 = p.generate(state1)
-        cmds2 = p.generate(state2)
-        # Compare first par color — should differ
-        par1_t0 = next((c.red, c.green, c.blue) for c in cmds1 if c.fixture_id == 1)
-        par1_t15 = next((c.red, c.green, c.blue) for c in cmds2 if c.fixture_id == 1)
-        assert par1_t0 != par1_t15
+        # Use fresh profiles to avoid crossfade between calls, and high
+        # energy so all pars are active via select_active_fixtures.
+        p1 = _make_profile()
+        p2 = _make_profile()
+        state1 = _state(segment="verse", vocal_energy=0.5, energy=0.8, timestamp=0.0)
+        state2 = _state(segment="verse", vocal_energy=0.5, energy=0.8, timestamp=15.0)
+        cmds1 = p1.generate(state1)
+        cmds2 = p2.generate(state2)
+        fm = FixtureMap()
+        par_ids = sorted(f.fixture_id for f in fm.by_type(FixtureType.PAR))
+        # Compare total par color across all pars — should differ over time
+        colors_t0 = [(c.red, c.green, c.blue) for c in cmds1 if c.fixture_id in par_ids]
+        colors_t15 = [(c.red, c.green, c.blue) for c in cmds2 if c.fixture_id in par_ids]
+        assert colors_t0 != colors_t15
 
 
 class TestDeterminism:

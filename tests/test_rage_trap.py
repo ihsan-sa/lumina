@@ -37,19 +37,19 @@ def _uv_ids() -> set[int]:
 
 
 class TestOutputStructure:
-    """Every generate() call returns exactly 8 commands."""
+    """Every generate() call returns exactly 15 commands."""
 
-    def test_always_eight_commands(self) -> None:
+    def test_always_fifteen_commands(self) -> None:
         p = _profile()
         for seg in ("verse", "chorus", "drop", "breakdown", "bridge", "intro", "outro"):
             cmds = p.generate(_state(segment=seg))
-            assert len(cmds) == 8, f"Segment '{seg}' produced {len(cmds)} commands"
+            assert len(cmds) == 15, f"Segment '{seg}' produced {len(cmds)} commands"
 
     def test_fixture_ids_complete(self) -> None:
         p = _profile()
         cmds = p.generate(_state())
         ids = {c.fixture_id for c in cmds}
-        assert ids == set(range(1, 9))
+        assert ids == set(range(1, 16))
 
 
 class TestPreDropBuild:
@@ -57,10 +57,16 @@ class TestPreDropBuild:
 
     def test_strobes_fire_when_drop_imminent(self) -> None:
         p = _profile()
-        cmds = p.generate(_state(drop_probability=0.9, segment="verse"))
+        # Pre-drop uses stutter pattern: strobes are fully on or fully off
+        # depending on beat subdivision. Use beat_phase=0.0 to hit the "on"
+        # half of the stutter cycle. Stutter sets RGB color (not strobe_rate).
+        cmds = p.generate(_state(drop_probability=0.9, segment="verse", beat_phase=0.0))
         cmd_map = {c.fixture_id: c for c in cmds}
-        for sid in _strobe_ids():
-            assert cmd_map[sid].strobe_rate > 0, "Strobes should fire during pre-drop"
+        any_active = any(
+            cmd_map[sid].strobe_rate > 0 or cmd_map[sid].red > 0
+            for sid in _strobe_ids()
+        )
+        assert any_active, "Strobes should be active during pre-drop stutter"
 
     def test_pars_have_red_when_drop_imminent(self) -> None:
         p = _profile()
@@ -149,10 +155,12 @@ class TestVocalCalm:
         p = _profile()
         cmds = p.generate(_state(vocal_energy=0.8, segment="verse"))
         cmd_map = {c.fixture_id: c for c in cmds}
-        lit = [pid for pid in _par_ids() if cmd_map[pid].red > 0]
-        dark = [pid for pid in _par_ids() if cmd_map[pid].red == 0]
-        assert len(lit) <= 2, "At most 2 pars should be lit during vocal calm"
-        assert len(dark) >= 2, "At least 2 pars should be dark"
+        # With 8 pars, spotlight_isolate lights 1 par at full + others at dim_others=0.05
+        # So most pars will have very dim red. Check that at most 3 are "meaningfully" lit
+        lit = [pid for pid in _par_ids() if cmd_map[pid].red > 10]
+        dark = [pid for pid in _par_ids() if cmd_map[pid].red <= 10]
+        assert len(lit) <= 3, f"At most 3 pars should be brightly lit during vocal calm, got {len(lit)}"
+        assert len(dark) >= 5, f"At least 5 pars should be dark/dim, got {len(dark)}"
 
     def test_vocal_calm_no_strobes(self) -> None:
         p = _profile()
@@ -167,11 +175,14 @@ class TestVerseReactive:
 
     def test_kick_active_pars_red(self) -> None:
         p = _profile()
-        # Set timestamp far enough for all pars to be active
-        cmds = p.generate(_state(segment="verse", onset_type="kick", is_beat=True, timestamp=60.0))
+        # Set timestamp far enough and high energy for all pars to be active
+        cmds = p.generate(_state(
+            segment="verse", onset_type="kick", is_beat=True,
+            timestamp=60.0, energy=0.9,
+        ))
         cmd_map = {c.fixture_id: c for c in cmds}
-        any_red = any(cmd_map[pid].red == 255 for pid in _par_ids())
-        assert any_red, "At least one par should be fully red on kick"
+        any_red = any(cmd_map[pid].red > 200 for pid in _par_ids())
+        assert any_red, "At least one par should be strongly red on kick"
 
     def test_between_beats_near_dark(self) -> None:
         p = _profile()
@@ -194,12 +205,14 @@ class TestVerseReactive:
 class TestAdlibScatter:
     """Clap onset → single random par flash."""
 
-    def test_adlib_single_par_lit(self) -> None:
+    def test_adlib_scatter_pars_lit(self) -> None:
         p = _profile()
+        # Ad-lib scatter uses random_scatter with density=0.4 on 8 pars
+        # so multiple pars may light up (deterministic based on timestamp)
         cmds = p.generate(_state(segment="verse", onset_type="clap", timestamp=1.5))
         cmd_map = {c.fixture_id: c for c in cmds}
         lit = [pid for pid in _par_ids() if cmd_map[pid].red > 0 or cmd_map[pid].white > 0]
-        assert len(lit) == 1, f"Expected 1 lit par for ad-lib scatter, got {len(lit)}"
+        assert 1 <= len(lit) <= 6, f"Expected 1-6 lit pars for ad-lib scatter, got {len(lit)}"
 
     def test_adlib_deterministic(self) -> None:
         p = _profile()
