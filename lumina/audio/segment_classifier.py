@@ -1,22 +1,25 @@
 """Song segment classification: verse, chorus, drop, breakdown, intro, outro, bridge.
 
-Classifies the current segment of a song using energy contours, spectral
+Classifies the current segment of a song using energy dynamics, spectral
 features, onset patterns, and structural cues. Works in both streaming
 mode (updating every few seconds) and offline mode (full-song analysis).
 
 Classification approach (rule-based, Phase 1):
 
-Each segment type has a characteristic feature signature:
-- **Intro/Outro:** Low-to-moderate energy, sparse onsets, gradual change.
-- **Verse:** Moderate energy, steady rhythm, vocals present, sub-bass present.
-- **Chorus:** High energy, dense onsets, vocals present, bright spectrum.
-- **Drop:** Highest energy spike, dense kicks/sub-bass, spectral brightness.
-- **Breakdown:** Energy dip, sparse onsets, reduced sub-bass, atmospheric.
-- **Bridge:** Moderate energy, different from verse (lower vocal or spectral shift).
+Uses a decision-tree driven by **energy dynamics** — the key insight is
+that drops, breakdowns, and builds are defined by *changes* in energy,
+not just absolute levels.  A drop is a sharp energy spike; a breakdown
+is a sharp energy dip.  The classifier uses both short-term (0.5s) and
+medium-term (2s) feature windows to detect these transitions.
 
-The classifier maintains a rolling window of feature statistics and
-computes similarity scores against each segment prototype. In offline
-mode, it applies temporal smoothing to avoid rapid segment switching.
+Decision tree (evaluated in priority order):
+1. **Position-based intro/outro:** First/last 10% of track at low energy.
+2. **Drop:** Instantaneous energy > 0.6 AND (short derivative > 0.08
+   OR sustained high energy with heavy sub-bass).
+3. **Breakdown:** Short energy average < 0.25, sparse onsets, falling.
+4. **Chorus:** High energy (> 0.5) with strong vocals (> 0.35).
+5. **Bridge:** Low-moderate energy, low vocals, mid-track.
+6. **Verse:** Default for everything else.
 """
 
 from __future__ import annotations
@@ -35,6 +38,35 @@ SEGMENT_LABELS = ("intro", "verse", "chorus", "drop", "breakdown", "bridge", "ou
 
 # Minimum segment duration in seconds (prevents rapid flickering)
 _MIN_SEGMENT_DURATION = 4.0
+
+# Window sizes in seconds
+_SHORT_WINDOW_S = 0.5  # For detecting transitions (derivatives)
+_MEDIUM_WINDOW_S = 2.0  # For sustained-state detection
+
+# ── Thresholds ────────────────────────────────────────────────────────
+
+# Drop detection
+_DROP_ENERGY_MIN = 0.55  # Minimum instantaneous energy for drop
+_DROP_DERIV_THRESHOLD = 0.08  # Short-term derivative spike for onset
+_DROP_SUSTAINED_ENERGY = 0.60  # Sustained energy for ongoing drop
+_DROP_SUSTAINED_BASS = 0.35  # Sub-bass for ongoing drop
+
+# Breakdown detection
+_BREAKDOWN_ENERGY_MAX = 0.28  # Max short energy for breakdown
+_BREAKDOWN_ONSET_MAX = 0.20  # Max onset density for breakdown
+
+# Chorus detection
+_CHORUS_ENERGY_MIN = 0.45  # Min medium energy for chorus
+_CHORUS_VOCAL_MIN = 0.35  # Min vocal energy for chorus
+
+# Bridge detection
+_BRIDGE_ENERGY_MAX = 0.42  # Max medium energy for bridge
+_BRIDGE_VOCAL_MAX = 0.30  # Max vocal for bridge
+
+# Intro/outro position thresholds
+_INTRO_POSITION = 0.10  # First 10%
+_OUTRO_POSITION = 0.90  # Last 10%
+_INTRO_OUTRO_ENERGY_MAX = 0.35  # Low energy required
 
 
 class SegmentType(Enum):
@@ -64,110 +96,48 @@ class SegmentFrame:
     scores: dict[str, float]
 
 
-# ── Segment prototypes ───────────────────────────────────────────────
-# Each prototype defines the expected feature ranges for a segment type.
-# Values are (center, tolerance) — closer to center = higher score.
-
-_PROTOTYPES: dict[str, dict[str, tuple[float, float]]] = {
-    "intro": {
-        "energy": (0.15, 0.20),
-        "energy_derivative": (0.01, 0.02),  # gently rising
-        "spectral_centroid_norm": (0.25, 0.25),
-        "onset_density": (0.10, 0.15),
-        "vocal_energy": (0.05, 0.15),
-        "sub_bass_energy": (0.10, 0.15),
-    },
-    "verse": {
-        "energy": (0.45, 0.20),
-        "energy_derivative": (0.0, 0.01),  # steady
-        "spectral_centroid_norm": (0.35, 0.20),
-        "onset_density": (0.35, 0.20),
-        "vocal_energy": (0.55, 0.25),
-        "sub_bass_energy": (0.35, 0.20),
-    },
-    "chorus": {
-        "energy": (0.70, 0.20),
-        "energy_derivative": (0.0, 0.02),
-        "spectral_centroid_norm": (0.55, 0.20),
-        "onset_density": (0.55, 0.20),
-        "vocal_energy": (0.65, 0.25),
-        "sub_bass_energy": (0.50, 0.20),
-    },
-    "drop": {
-        "energy": (0.90, 0.15),
-        "energy_derivative": (0.0, 0.03),
-        "spectral_centroid_norm": (0.60, 0.25),
-        "onset_density": (0.70, 0.25),
-        "vocal_energy": (0.15, 0.25),  # vocals usually absent in drop
-        "sub_bass_energy": (0.75, 0.20),
-    },
-    "breakdown": {
-        "energy": (0.20, 0.15),
-        "energy_derivative": (-0.01, 0.02),  # falling or low
-        "spectral_centroid_norm": (0.30, 0.25),
-        "onset_density": (0.10, 0.15),
-        "vocal_energy": (0.20, 0.25),
-        "sub_bass_energy": (0.10, 0.15),
-    },
-    "bridge": {
-        "energy": (0.40, 0.20),
-        "energy_derivative": (0.0, 0.02),
-        "spectral_centroid_norm": (0.45, 0.25),
-        "onset_density": (0.25, 0.20),
-        "vocal_energy": (0.35, 0.25),
-        "sub_bass_energy": (0.25, 0.20),
-    },
-    "outro": {
-        "energy": (0.20, 0.25),
-        "energy_derivative": (-0.01, 0.02),  # falling
-        "spectral_centroid_norm": (0.25, 0.25),
-        "onset_density": (0.10, 0.15),
-        "vocal_energy": (0.10, 0.20),
-        "sub_bass_energy": (0.15, 0.20),
-    },
-}
-
-
 class SegmentClassifier:
-    """Real-time song segment classifier.
+    """Real-time song segment classifier using energy dynamics.
 
-    Classifies audio into segment types using a rolling window of
-    audio features compared against segment prototypes. Enforces
-    minimum segment duration to prevent rapid switching.
+    Uses short-term (0.5s) and medium-term (2s) feature windows to
+    detect both sudden transitions (drops, breakdowns) and sustained
+    states (verse, chorus).  Enforces minimum segment duration to
+    prevent rapid switching.
 
     Args:
         fps: Input frame rate.
-        window_seconds: Rolling window size for feature averaging.
         min_segment_seconds: Minimum duration before allowing segment change.
-        position_weight: How much track position (0-1) influences intro/outro.
+        position_weight: How much track position influences intro/outro.
     """
 
     def __init__(
         self,
         fps: int = 60,
-        window_seconds: float = 4.0,
         min_segment_seconds: float = _MIN_SEGMENT_DURATION,
         position_weight: float = 0.3,
+        **_kwargs: object,
     ) -> None:
         self._fps = fps
-        self._window_size = max(1, int(fps * window_seconds))
+        self._short_size = max(1, int(fps * _SHORT_WINDOW_S))
+        self._medium_size = max(1, int(fps * _MEDIUM_WINDOW_S))
         self._min_segment_frames = int(fps * min_segment_seconds)
         self._position_weight = position_weight
-
-        # Spectral centroid normalization constant (Hz → 0-1 range)
-        # 10 kHz maps to ~1.0
         self._centroid_norm_hz = 10000.0
 
         self.reset()
 
     def reset(self) -> None:
         """Reset all internal state."""
-        self._energy_history: deque[float] = deque(maxlen=self._window_size)
-        self._deriv_history: deque[float] = deque(maxlen=self._window_size)
-        self._centroid_history: deque[float] = deque(maxlen=self._window_size)
-        self._onset_history: deque[float] = deque(maxlen=self._window_size)
-        self._vocal_history: deque[float] = deque(maxlen=self._window_size)
-        self._bass_history: deque[float] = deque(maxlen=self._window_size)
+        self._energy_short: deque[float] = deque(maxlen=self._short_size)
+        self._energy_medium: deque[float] = deque(maxlen=self._medium_size)
+        self._onset_medium: deque[float] = deque(maxlen=self._medium_size)
+        self._vocal_medium: deque[float] = deque(maxlen=self._medium_size)
+        self._bass_medium: deque[float] = deque(maxlen=self._medium_size)
+        self._centroid_medium: deque[float] = deque(maxlen=self._medium_size)
+
+        # For short-term derivative: two half-windows
+        self._energy_prev_half: deque[float] = deque(maxlen=self._short_size)
+        self._energy_curr_half: deque[float] = deque(maxlen=self._short_size)
 
         self._current_segment = "verse"
         self._frames_in_segment = 0
@@ -176,8 +146,6 @@ class SegmentClassifier:
 
     def set_track_duration(self, duration_seconds: float) -> None:
         """Set total track duration for position-aware classification.
-
-        Knowing the track length helps detect intro/outro via position.
 
         Args:
             duration_seconds: Total track duration in seconds.
@@ -199,7 +167,7 @@ class SegmentClassifier:
 
         Args:
             energy: 0.0-1.0 overall energy.
-            energy_derivative: Rate of energy change.
+            energy_derivative: Rate of energy change (from energy tracker).
             spectral_centroid: Brightness in Hz.
             sub_bass_energy: 0.0-1.0 sub-bass level.
             vocal_energy: 0.0-1.0 vocal presence.
@@ -208,40 +176,66 @@ class SegmentClassifier:
         Returns:
             SegmentFrame with current segment and confidence.
         """
-        # Store in history
-        self._energy_history.append(energy)
-        self._deriv_history.append(energy_derivative)
+        # Rotate derivative half-windows (prev ← curr, curr ← new)
+        if len(self._energy_curr_half) >= self._short_size:
+            self._energy_prev_half.append(self._energy_curr_half[0])
+        self._energy_curr_half.append(energy)
+
+        # Store in history windows
+        self._energy_short.append(energy)
+        self._energy_medium.append(energy)
+        self._onset_medium.append(1.0 if has_onset else 0.0)
+        self._vocal_medium.append(vocal_energy)
+        self._bass_medium.append(sub_bass_energy)
         centroid_norm = min(1.0, spectral_centroid / self._centroid_norm_hz)
-        self._centroid_history.append(centroid_norm)
-        self._onset_history.append(1.0 if has_onset else 0.0)
-        self._vocal_history.append(vocal_energy)
-        self._bass_history.append(sub_bass_energy)
+        self._centroid_medium.append(centroid_norm)
 
         self._total_frames += 1
         self._frames_in_segment += 1
 
-        # Compute windowed features
-        features = self._compute_window_features()
+        # Compute multi-scale features
+        energy_instant = energy
+        energy_short = float(np.mean(self._energy_short))
+        energy_medium = float(np.mean(self._energy_medium))
+        short_deriv = self._compute_short_derivative()
+        onset_density = float(np.mean(self._onset_medium))
+        vocal_avg = float(np.mean(self._vocal_medium))
+        bass_avg = float(np.mean(self._bass_medium))
 
-        # Score each segment type
-        scores = self._score_segments(features)
+        # Track position (0-1)
+        position = self._get_position()
 
-        # Apply position bias for intro/outro
-        scores = self._apply_position_bias(scores)
+        # ── Decision tree ─────────────────────────────────────────
+        candidate, confidence = self._decide(
+            energy_instant=energy_instant,
+            energy_short=energy_short,
+            energy_medium=energy_medium,
+            short_deriv=short_deriv,
+            onset_density=onset_density,
+            vocal_avg=vocal_avg,
+            bass_avg=bass_avg,
+            position=position,
+        )
 
-        # Select best segment (with minimum duration enforcement)
-        best_segment = max(scores, key=scores.get)  # type: ignore[arg-type]
-        best_score = scores[best_segment]
+        # Build scores dict for diagnostic visibility
+        scores = self._build_scores(
+            energy_instant,
+            energy_short,
+            energy_medium,
+            short_deriv,
+            onset_density,
+            vocal_avg,
+            bass_avg,
+            position,
+        )
 
-        if self._frames_in_segment >= self._min_segment_frames:
-            if best_segment != self._current_segment:
-                self._current_segment = best_segment
-                self._frames_in_segment = 0
-
-        # Confidence is the margin between best and second-best
-        sorted_scores = sorted(scores.values(), reverse=True)
-        confidence = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else 1.0
-        confidence = max(0.0, min(1.0, confidence * 3.0))  # scale up for readability
+        # Enforce minimum segment duration
+        if (
+            self._frames_in_segment >= self._min_segment_frames
+            and candidate != self._current_segment
+        ):
+            self._current_segment = candidate
+            self._frames_in_segment = 0
 
         return SegmentFrame(
             segment=self._current_segment,
@@ -259,8 +253,6 @@ class SegmentClassifier:
         has_onsets: list[bool],
     ) -> list[SegmentFrame]:
         """Classify segments for an entire track (offline mode).
-
-        Uses forward-backward smoothing for better segment boundaries.
 
         Args:
             energies: Energy per frame.
@@ -299,91 +291,127 @@ class SegmentClassifier:
 
     # ── Internal ──────────────────────────────────────────────────
 
-    def _compute_window_features(self) -> dict[str, float]:
-        """Compute averaged features over the rolling window.
+    def _compute_short_derivative(self) -> float:
+        """Short-term energy derivative: mean(curr_half) - mean(prev_half).
 
         Returns:
-            Feature dictionary matching prototype keys.
+            Positive = energy rising, negative = falling.
         """
-        return {
-            "energy": float(np.mean(self._energy_history)) if self._energy_history else 0.0,
-            "energy_derivative": (
-                float(np.mean(self._deriv_history)) if self._deriv_history else 0.0
-            ),
-            "spectral_centroid_norm": (
-                float(np.mean(self._centroid_history)) if self._centroid_history else 0.0
-            ),
-            "onset_density": (
-                float(np.mean(self._onset_history)) if self._onset_history else 0.0
-            ),
-            "vocal_energy": (
-                float(np.mean(self._vocal_history)) if self._vocal_history else 0.0
-            ),
-            "sub_bass_energy": (
-                float(np.mean(self._bass_history)) if self._bass_history else 0.0
-            ),
-        }
+        if len(self._energy_prev_half) < 2 or len(self._energy_curr_half) < 2:
+            return 0.0
+        curr = float(np.mean(self._energy_curr_half))
+        prev = float(np.mean(self._energy_prev_half))
+        return curr - prev
 
-    def _score_segments(self, features: dict[str, float]) -> dict[str, float]:
-        """Score each segment type against its prototype.
+    def _get_position(self) -> float:
+        """Track position as 0.0-1.0."""
+        if self._track_duration_frames and self._track_duration_frames > 0:
+            return max(0.0, min(1.0, self._total_frames / self._track_duration_frames))
+        return 0.5  # unknown position → mid-track (no intro/outro bias)
 
-        Uses Gaussian similarity: score = exp(-(x - center)^2 / (2 * tol^2)).
-
-        Args:
-            features: Current windowed features.
+    def _decide(
+        self,
+        energy_instant: float,
+        energy_short: float,
+        energy_medium: float,
+        short_deriv: float,
+        onset_density: float,
+        vocal_avg: float,
+        bass_avg: float,
+        position: float,
+    ) -> tuple[str, float]:
+        """Decision tree for segment classification.
 
         Returns:
-            Dict of segment label -> similarity score.
+            Tuple of (segment_label, confidence).
+        """
+        # 1. Intro: early position + low energy
+        if position < _INTRO_POSITION and energy_medium < _INTRO_OUTRO_ENERGY_MAX:
+            return "intro", 0.8
+
+        # 2. Outro: late position + low energy
+        if position > _OUTRO_POSITION and energy_medium < _INTRO_OUTRO_ENERGY_MAX:
+            return "outro", 0.8
+
+        # 3. Drop: sharp energy spike OR sustained high energy with bass
+        if energy_instant > _DROP_ENERGY_MIN and short_deriv > _DROP_DERIV_THRESHOLD:
+            return "drop", min(1.0, short_deriv / 0.2 + 0.5)
+        if (
+            energy_short > _DROP_SUSTAINED_ENERGY
+            and bass_avg > _DROP_SUSTAINED_BASS
+            and vocal_avg < _CHORUS_VOCAL_MIN
+        ):
+            return "drop", 0.7
+
+        # 4. Breakdown: low energy, sparse onsets
+        if energy_short < _BREAKDOWN_ENERGY_MAX and onset_density < _BREAKDOWN_ONSET_MAX:
+            return "breakdown", 0.7
+        if short_deriv < -0.08 and energy_short < 0.35:
+            return "breakdown", 0.6
+
+        # 5. Chorus: high energy + vocals
+        if energy_medium > _CHORUS_ENERGY_MIN and vocal_avg > _CHORUS_VOCAL_MIN:
+            return "chorus", 0.6
+
+        # 6. Bridge: low-moderate energy, low vocals, mid-track
+        if (
+            energy_medium < _BRIDGE_ENERGY_MAX
+            and vocal_avg < _BRIDGE_VOCAL_MAX
+            and 0.2 < position < 0.85
+        ):
+            return "bridge", 0.5
+
+        # 7. Default: verse
+        return "verse", 0.5
+
+    @staticmethod
+    def _build_scores(
+        energy_instant: float,
+        energy_short: float,
+        energy_medium: float,
+        short_deriv: float,
+        onset_density: float,
+        vocal_avg: float,
+        bass_avg: float,
+        position: float,
+    ) -> dict[str, float]:
+        """Build diagnostic score dict for visibility into the decision.
+
+        Returns:
+            Approximate score per segment (not used for classification).
         """
         scores: dict[str, float] = {}
 
-        for label, prototype in _PROTOTYPES.items():
-            total_score = 0.0
-            n_features = 0
+        # Drop score: energy + derivative
+        drop_e = max(0.0, (energy_instant - 0.4) / 0.6)
+        drop_d = max(0.0, short_deriv / 0.15)
+        drop_b = max(0.0, (bass_avg - 0.2) / 0.6)
+        scores["drop"] = min(1.0, 0.4 * drop_e + 0.4 * drop_d + 0.2 * drop_b)
 
-            for feat_name, (center, tolerance) in prototype.items():
-                value = features.get(feat_name, 0.0)
-                # Gaussian similarity
-                diff = value - center
-                score = float(np.exp(-(diff**2) / (2 * tolerance**2)))
-                total_score += score
-                n_features += 1
+        # Breakdown score
+        bd_e = max(0.0, 1.0 - energy_short / 0.35)
+        bd_o = max(0.0, 1.0 - onset_density / 0.25)
+        scores["breakdown"] = min(1.0, 0.6 * bd_e + 0.4 * bd_o)
 
-            scores[label] = total_score / n_features if n_features > 0 else 0.0
+        # Chorus score
+        ch_e = max(0.0, (energy_medium - 0.3) / 0.5)
+        ch_v = max(0.0, (vocal_avg - 0.2) / 0.5)
+        scores["chorus"] = min(1.0, 0.5 * ch_e + 0.5 * ch_v)
+
+        # Verse score: moderate energy, not extreme
+        v_e = max(0.0, 1.0 - abs(energy_medium - 0.45) / 0.3)
+        scores["verse"] = min(1.0, v_e)
+
+        # Bridge score
+        br_e = max(0.0, 1.0 - abs(energy_medium - 0.35) / 0.3)
+        br_v = max(0.0, 1.0 - vocal_avg / 0.5)
+        scores["bridge"] = min(1.0, 0.5 * br_e + 0.5 * br_v)
+
+        # Intro/outro: position-based
+        scores["intro"] = max(0.0, 1.0 - position / 0.15) if position < 0.15 else 0.0
+        scores["outro"] = max(0.0, (position - 0.85) / 0.15) if position > 0.85 else 0.0
 
         return scores
-
-    def _apply_position_bias(self, scores: dict[str, float]) -> dict[str, float]:
-        """Bias intro/outro scores based on track position.
-
-        Early positions boost intro, late positions boost outro.
-
-        Args:
-            scores: Raw segment scores.
-
-        Returns:
-            Position-adjusted scores.
-        """
-        if self._track_duration_frames is None or self._track_duration_frames <= 0:
-            return scores
-
-        position = self._total_frames / self._track_duration_frames
-        position = max(0.0, min(1.0, position))
-
-        adjusted = dict(scores)
-        w = self._position_weight
-
-        # Intro bias: strong at start, fades by 15%
-        if position < 0.15:
-            intro_boost = (1.0 - position / 0.15) * w
-            adjusted["intro"] = adjusted.get("intro", 0.0) + intro_boost
-
-        # Outro bias: strong at end, starts at 85%
-        if position > 0.85:
-            outro_boost = ((position - 0.85) / 0.15) * w
-            adjusted["outro"] = adjusted.get("outro", 0.0) + outro_boost
-
-        return adjusted
 
     @staticmethod
     def _smooth_segments(frames: list[SegmentFrame]) -> list[SegmentFrame]:
@@ -412,8 +440,8 @@ class SegmentClassifier:
                 run_start = i
         runs.append((current_label, run_start, len(frames) - run_start))
 
-        # Absorb very short runs (< 60 frames ≈ 1 second) into neighbors
-        min_run = 60
+        # Absorb very short runs (< 120 frames = 2 seconds) into neighbors
+        min_run = 120
         if len(runs) >= 3:
             merged = [runs[0]]
             for i in range(1, len(runs) - 1):
@@ -431,10 +459,12 @@ class SegmentClassifier:
         for label, start, length in runs:
             for j in range(length):
                 orig = frames[start + j]
-                result.append(SegmentFrame(
-                    segment=label,
-                    confidence=orig.confidence,
-                    scores=orig.scores,
-                ))
+                result.append(
+                    SegmentFrame(
+                        segment=label,
+                        confidence=orig.confidence,
+                        scores=orig.scores,
+                    )
+                )
 
         return result
