@@ -241,8 +241,9 @@ class StructuralAnalyzer:
             sym=True,
         )
 
-        # Novelty function via checkerboard kernel
-        novelty = librosa.segment.novelty(rec)
+        # Novelty function via checkerboard kernel convolution along diagonal
+        # (librosa.segment.novelty was removed in librosa 0.10)
+        novelty = self._checkerboard_novelty(rec)
 
         # Peak-pick boundaries
         from scipy.signal import find_peaks
@@ -263,6 +264,50 @@ class StructuralAnalyzer:
         boundaries = [b for b in boundaries if 0.5 < b < duration - 0.5]
 
         return sorted(boundaries)
+
+    @staticmethod
+    def _checkerboard_novelty(rec: np.ndarray, kernel_size: int = 64) -> np.ndarray:
+        """Compute novelty curve from a recurrence matrix.
+
+        Convolves a checkerboard kernel along the main diagonal of the
+        recurrence matrix. High values indicate structural boundaries
+        where the self-similarity pattern changes.
+
+        This replaces ``librosa.segment.novelty`` which was removed in
+        librosa 0.10.
+
+        Args:
+            rec: Square recurrence/affinity matrix.
+            kernel_size: Size of the checkerboard kernel (in frames).
+
+        Returns:
+            1-D novelty curve, same length as rec's diagonal.
+        """
+        n = rec.shape[0]
+        half = kernel_size // 2
+
+        # Build checkerboard kernel: +1 in top-right and bottom-left,
+        # -1 in top-left and bottom-right quadrants
+        kern = np.ones((kernel_size, kernel_size))
+        kern[:half, :half] = -1
+        kern[half:, half:] = -1
+
+        novelty = np.zeros(n)
+        for i in range(half, n - half):
+            # Extract the kernel-sized patch centered on diagonal position i
+            patch = rec[i - half : i + half, i - half : i + half]
+            if patch.shape == (kernel_size, kernel_size):
+                novelty[i] = float(np.sum(patch * kern))
+
+        # Normalize to [0, 1]
+        max_val = np.max(novelty)
+        if max_val > 1e-10:
+            novelty = novelty / max_val
+
+        # Half-wave rectify (only positive = actual boundaries)
+        novelty = np.maximum(novelty, 0.0)
+
+        return novelty
 
     # ── Feature extraction ────────────────────────────────────────
 
@@ -429,9 +474,16 @@ class StructuralAnalyzer:
 
             # Compute contrast with predecessor
             delta_energy = 0.0
+            prev_energy = 0.0
             if i > 0:
                 prev_energy = sections[i - 1].features.get("mean_energy", 0.5)
                 delta_energy = energy - prev_energy
+
+            # Relative energy jump: how much bigger is this section vs previous?
+            # e.g., prev=0.3 curr=0.6 → relative_jump = 1.0 (100% increase)
+            relative_jump = (
+                delta_energy / prev_energy if prev_energy > 0.05 else 0.0
+            )
 
             # Decision tree (priority order)
             label = "verse"
@@ -445,18 +497,17 @@ class StructuralAnalyzer:
             elif position > 0.85 and energy < 0.40:
                 label = "outro"
                 confidence = 0.8
-            # Drop: large positive energy jump + high onsets + low vocals
-            elif delta_energy > 0.12 and onset_density > 0.15 and vocal < 0.40:
-                label = "drop"
-                confidence = min(1.0, 0.5 + delta_energy * 3)
-            # Also drop: sustained high energy with heavy bass
+            # Drop: previous section must have been significantly quieter (>30% lower)
+            # This prevents labeling every high-energy section as a drop
             elif (
-                energy > 0.60
-                and sec.features.get("sub_bass_energy", 0) > 0.35
-                and vocal < 0.35
+                i > 0
+                and relative_jump > 0.30
+                and delta_energy > 0.10
+                and onset_density > 0.15
+                and vocal < 0.45
             ):
                 label = "drop"
-                confidence = 0.7
+                confidence = min(1.0, 0.5 + relative_jump * 0.5)
             # Breakdown: large negative energy drop + sparse onsets
             elif delta_energy < -0.10 and onset_density < 0.20:
                 label = "breakdown"

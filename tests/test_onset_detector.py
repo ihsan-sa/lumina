@@ -343,18 +343,35 @@ class TestResetAndOffline:
         det.reset()
         assert det._prev_spectrum is None
 
-    def test_offline_same_as_fresh_streaming(self) -> None:
-        """Offline should produce same results as fresh streaming."""
-        det = OnsetDetector(sr=44100, fps=60, threshold=0.05)
+    def test_offline_detects_onsets(self) -> None:
+        """Offline should detect onsets with adaptive thresholding."""
+        det = OnsetDetector(sr=44100, fps=60)
         kick = make_kick()
         audio = embed_in_silence(kick, 0.5, 2.0)
 
         offline_results = det.analyze_offline(audio)
-        det.reset()
-        streaming_results = det.process_chunk(audio)
+        onsets = [r for r in offline_results if r is not None]
+        assert len(onsets) >= 1
 
-        assert len(offline_results) == len(streaming_results)
-        # Both should detect onsets in the same frames
-        offline_onsets = [i for i, r in enumerate(offline_results) if r is not None]
-        streaming_onsets = [i for i, r in enumerate(streaming_results) if r is not None]
-        assert offline_onsets == streaming_onsets
+    def test_offline_returns_correct_count(self) -> None:
+        """Offline should return one result per frame."""
+        det = OnsetDetector(sr=44100, fps=60)
+        audio = make_silence(1.0)
+        results = det.analyze_offline(audio)
+        expected = len(audio) // (44100 // 60)
+        assert len(results) == expected
+
+    def test_offline_adapts_to_quiet_input(self) -> None:
+        """Offline adaptive threshold should detect onsets in quiet signals."""
+        det = OnsetDetector(sr=44100, fps=60)
+        # Very quiet kick — would be missed by the fixed 0.15 threshold
+        kick = make_kick() * 0.05
+        audio = np.concatenate([
+            embed_in_silence(kick, 0.3, 1.0),
+            embed_in_silence(kick, 0.3, 1.0),
+            embed_in_silence(kick, 0.3, 1.0),
+        ])
+        results = det.analyze_offline(audio)
+        onsets = [r for r in results if r is not None]
+        # Should still detect them via adaptive threshold
+        assert len(onsets) >= 2

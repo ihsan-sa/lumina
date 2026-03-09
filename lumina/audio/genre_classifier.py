@@ -77,84 +77,92 @@ _FAMILY_PROFILES: dict[str, list[str]] = {
 
 _PROFILE_PROTOTYPES: dict[str, dict[str, tuple[float, float]]] = {
     "rage_trap": {
-        # Carti, Travis Scott: extreme energy contrast, heavy 808s, sparse vocals
-        "energy_mean": (0.65, 0.20),
-        "energy_variance": (0.25, 0.15),  # high variance = contrasts
-        "spectral_centroid_norm": (0.35, 0.20),
-        "sub_bass_ratio": (0.60, 0.20),
-        "onset_density": (0.40, 0.20),
-        "vocal_ratio": (0.35, 0.25),
-        "drop_tendency": (0.30, 0.20),
+        # Carti, Travis Scott: VIOLENT dynamics, distorted highs, sparse/processed vocals
+        # Key separators vs french_hard: high variance, high centroid, very low vocals
+        "energy_mean": (0.60, 0.20),
+        "energy_variance": (0.35, 0.12),  # VERY high, tight — defining feature
+        "spectral_centroid_norm": (0.50, 0.20),  # distorted, aggressive production
+        "sub_bass_ratio": (0.55, 0.20),
+        "onset_density": (0.50, 0.20),  # rapid hi-hats, aggressive drums
+        "vocal_ratio": (0.20, 0.15),  # VERY low, tight — sparse/processed
+        "drop_tendency": (0.35, 0.20),
     },
     "psych_rnb": {
         # Don Toliver, Weeknd: smooth, atmospheric, moderate energy, rich vocals
-        "energy_mean": (0.50, 0.15),
-        "energy_variance": (0.10, 0.10),  # smooth = low variance
+        # Key separators: very low variance, very high vocals, sparse onsets
+        "energy_mean": (0.45, 0.15),
+        "energy_variance": (0.08, 0.08),  # very smooth
         "spectral_centroid_norm": (0.45, 0.20),
-        "sub_bass_ratio": (0.40, 0.20),
-        "onset_density": (0.25, 0.15),
-        "vocal_ratio": (0.65, 0.20),
-        "drop_tendency": (0.15, 0.15),
+        "sub_bass_ratio": (0.35, 0.20),
+        "onset_density": (0.20, 0.15),  # sparse, laid-back
+        "vocal_ratio": (0.70, 0.15),  # VERY high, tight — vocals dominate
+        "drop_tendency": (0.10, 0.10),
     },
     "french_melodic": {
         # Ninho, Jul: warm, colorful, hi-hat bounce, melodic vocals
-        "energy_mean": (0.50, 0.15),
-        "energy_variance": (0.12, 0.10),
-        "spectral_centroid_norm": (0.40, 0.20),
-        "sub_bass_ratio": (0.35, 0.20),
-        "onset_density": (0.55, 0.20),  # hi-hat heavy
-        "vocal_ratio": (0.60, 0.20),
-        "drop_tendency": (0.10, 0.10),
+        # Key separators: very high onset density (hi-hats), high vocals, low variance
+        "energy_mean": (0.48, 0.15),
+        "energy_variance": (0.10, 0.08),  # consistent vibe
+        "spectral_centroid_norm": (0.42, 0.20),
+        "sub_bass_ratio": (0.35, 0.15),
+        "onset_density": (0.55, 0.15),  # HIGH, tight — hi-hat bounce is defining
+        "vocal_ratio": (0.62, 0.15),  # high melodic vocals
+        "drop_tendency": (0.08, 0.08),
     },
     "french_hard": {
-        # Kaaris: heavy, deliberate hits, aggressive sub-bass
-        "energy_mean": (0.70, 0.15),
-        "energy_variance": (0.18, 0.15),
-        "spectral_centroid_norm": (0.30, 0.15),
-        "sub_bass_ratio": (0.65, 0.20),
-        "onset_density": (0.35, 0.20),
-        "vocal_ratio": (0.50, 0.25),
-        "drop_tendency": (0.20, 0.15),
+        # Kaaris: heavy, deliberate, consistently aggressive, DARK
+        # Key separators vs rage_trap: low variance, very low centroid, very high bass
+        "energy_mean": (0.68, 0.12),  # consistently high
+        "energy_variance": (0.12, 0.10),  # LOW — deliberate, regimented
+        "spectral_centroid_norm": (0.28, 0.12),  # VERY low, tight — dark production
+        "sub_bass_ratio": (0.70, 0.15),  # VERY high, tight — 808s dominate
+        "onset_density": (0.30, 0.15),  # moderate — deliberate hits
+        "vocal_ratio": (0.50, 0.20),  # clear aggressive rap
+        "drop_tendency": (0.15, 0.12),
     },
     "euro_alt": {
         # AyVe, Exetra Archive: restrained, sparse, artistic
-        "energy_mean": (0.35, 0.15),
-        "energy_variance": (0.15, 0.10),
-        "spectral_centroid_norm": (0.50, 0.25),
-        "sub_bass_ratio": (0.25, 0.20),
-        "onset_density": (0.20, 0.15),
-        "vocal_ratio": (0.40, 0.25),
-        "drop_tendency": (0.10, 0.10),
+        # Key separators: very low energy, very sparse onsets
+        "energy_mean": (0.32, 0.12),  # LOW, tight — restraint is defining
+        "energy_variance": (0.12, 0.10),
+        "spectral_centroid_norm": (0.52, 0.20),
+        "sub_bass_ratio": (0.22, 0.15),
+        "onset_density": (0.18, 0.12),  # VERY low, tight — sparse
+        "vocal_ratio": (0.38, 0.20),
+        "drop_tendency": (0.08, 0.08),
     },
     "theatrical": {
-        # Stromae: dynamic, emotional arc, energy follows story
+        # Stromae: dynamic storytelling, emotional arc, vocal-driven
+        # Key separators: high variance + high vocals (unlike rage_trap which has low vocals)
         "energy_mean": (0.50, 0.20),
-        "energy_variance": (0.25, 0.15),  # high variance = dynamic
-        "spectral_centroid_norm": (0.50, 0.20),
-        "sub_bass_ratio": (0.30, 0.20),
+        "energy_variance": (0.28, 0.15),  # high — follows emotional arc
+        "spectral_centroid_norm": (0.52, 0.20),
+        "sub_bass_ratio": (0.28, 0.15),  # low — not bass-driven
         "onset_density": (0.35, 0.20),
-        "vocal_ratio": (0.55, 0.25),
-        "drop_tendency": (0.20, 0.15),
+        "vocal_ratio": (0.60, 0.15),  # high — vocals carry the story
+        "drop_tendency": (0.22, 0.15),
     },
     "festival_edm": {
-        # Guetta, Armin, Edward Maya: build-drop cycles, high energy, bright
-        "energy_mean": (0.70, 0.15),
-        "energy_variance": (0.30, 0.15),  # huge build-drop variance
-        "spectral_centroid_norm": (0.60, 0.20),
-        "sub_bass_ratio": (0.50, 0.20),
-        "onset_density": (0.50, 0.20),
-        "vocal_ratio": (0.30, 0.25),
-        "drop_tendency": (0.65, 0.20),  # frequent builds/drops
+        # Guetta, Armin, Edward Maya: build-drop cycles, bright synths, euphoric
+        # Key separators: very high centroid, very high drop tendency
+        "energy_mean": (0.68, 0.15),
+        "energy_variance": (0.32, 0.12),  # VERY high, tight — extreme build-drop
+        "spectral_centroid_norm": (0.62, 0.15),  # HIGH, tight — bright synths
+        "sub_bass_ratio": (0.48, 0.20),
+        "onset_density": (0.48, 0.20),
+        "vocal_ratio": (0.28, 0.20),  # low — instrumental focused
+        "drop_tendency": (0.70, 0.15),  # VERY high, tight — this IS the genre
     },
     "uk_bass": {
-        # Fred again..: raw, underground, bass-heavy, energetic
-        "energy_mean": (0.65, 0.15),
-        "energy_variance": (0.20, 0.15),
-        "spectral_centroid_norm": (0.40, 0.20),
-        "sub_bass_ratio": (0.60, 0.20),
-        "onset_density": (0.50, 0.20),
-        "vocal_ratio": (0.25, 0.20),
-        "drop_tendency": (0.45, 0.20),
+        # Fred again..: raw, underground, bass-heavy, chaotic energy
+        # Key separators vs french_hard: higher centroid, higher onsets, higher drops
+        "energy_mean": (0.62, 0.15),
+        "energy_variance": (0.22, 0.12),
+        "spectral_centroid_norm": (0.38, 0.15),
+        "sub_bass_ratio": (0.62, 0.15),  # very high bass
+        "onset_density": (0.52, 0.15),  # high — frantic
+        "vocal_ratio": (0.22, 0.15),  # low — sample-based
+        "drop_tendency": (0.50, 0.15),  # high
     },
 }
 

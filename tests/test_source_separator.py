@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
 
 from lumina.audio.source_separator import (
     SourceSeparator,
@@ -103,55 +104,75 @@ class TestSeparatorCache:
 
 
 class TestMockSeparation:
-    def _make_mock_separator(self) -> tuple[SourceSeparator, MagicMock]:
-        """Create a SourceSeparator with a mocked demucs backend."""
-        import torch
+    def _make_mock_separator(self) -> SourceSeparator:
+        """Create a SourceSeparator with a mocked demucs model.
 
-        sep = SourceSeparator(device="cpu")
-        mock_demucs = MagicMock()
-
+        Patches ``demucs.apply.apply_model`` so the real model isn't needed.
+        The mock returns a tensor of shape (1, 4, 2, N) matching htdemucs
+        output format: sources=['drums', 'bass', 'other', 'vocals'].
+        """
         n = 44100 * 3  # 3 seconds
-        # Mock output: dict of stem_name -> (2, N) tensor
-        mock_output = {
-            "drums": torch.randn(2, n),
-            "bass": torch.randn(2, n),
-            "vocals": torch.randn(2, n),
-            "other": torch.randn(2, n),
-        }
-        mock_demucs.separate_tensor.return_value = (None, mock_output)
-        sep._separator = mock_demucs
+        sep = SourceSeparator(device="cpu")
 
-        return sep, mock_demucs
+        # Set model and sources as if _ensure_loaded() ran
+        mock_model = MagicMock()
+        sep._model = mock_model
+        sep._sources = ["drums", "bass", "other", "vocals"]
+
+        # Build fake apply_model output: (1, 4, 2, N)
+        fake_output = torch.randn(1, 4, 2, n)
+        self._patch = patch(
+            "demucs.apply.apply_model",
+            return_value=fake_output,
+        )
+        return sep
+
+    def _start_patch(self) -> SourceSeparator:
+        sep = self._make_mock_separator()
+        self._patch.start()
+        return sep
+
+    def _stop_patch(self) -> None:
+        self._patch.stop()
 
     def test_separation_returns_correct_length(self) -> None:
         """Separated stems should match input length."""
-        sep, _ = self._make_mock_separator()
-        audio = np.random.randn(44100 * 3).astype(np.float32)
-        result = sep.separate(audio, sr=44100)
+        sep = self._start_patch()
+        try:
+            audio = np.random.randn(44100 * 3).astype(np.float32)
+            result = sep.separate(audio, sr=44100)
 
-        assert len(result.drums) == len(audio)
-        assert len(result.bass) == len(audio)
-        assert len(result.vocals) == len(audio)
-        assert len(result.other) == len(audio)
+            assert len(result.drums) == len(audio)
+            assert len(result.bass) == len(audio)
+            assert len(result.vocals) == len(audio)
+            assert len(result.other) == len(audio)
+        finally:
+            self._stop_patch()
 
     def test_separation_returns_float32(self) -> None:
         """All stems should be float32."""
-        sep, _ = self._make_mock_separator()
-        audio = np.random.randn(44100 * 3).astype(np.float32)
-        result = sep.separate(audio, sr=44100)
+        sep = self._start_patch()
+        try:
+            audio = np.random.randn(44100 * 3).astype(np.float32)
+            result = sep.separate(audio, sr=44100)
 
-        assert result.drums.dtype == np.float32
-        assert result.bass.dtype == np.float32
-        assert result.vocals.dtype == np.float32
-        assert result.other.dtype == np.float32
+            assert result.drums.dtype == np.float32
+            assert result.bass.dtype == np.float32
+            assert result.vocals.dtype == np.float32
+            assert result.other.dtype == np.float32
+        finally:
+            self._stop_patch()
 
     def test_separation_mono_output(self) -> None:
         """All stems should be 1D (mono)."""
-        sep, _ = self._make_mock_separator()
-        audio = np.random.randn(44100 * 3).astype(np.float32)
-        result = sep.separate(audio, sr=44100)
+        sep = self._start_patch()
+        try:
+            audio = np.random.randn(44100 * 3).astype(np.float32)
+            result = sep.separate(audio, sr=44100)
 
-        assert result.drums.ndim == 1
-        assert result.bass.ndim == 1
-        assert result.vocals.ndim == 1
-        assert result.other.ndim == 1
+            assert result.drums.ndim == 1
+            assert result.bass.ndim == 1
+            assert result.vocals.ndim == 1
+            assert result.other.ndim == 1
+        finally:
+            self._stop_patch()

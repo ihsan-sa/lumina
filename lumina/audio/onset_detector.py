@@ -124,7 +124,12 @@ class OnsetDetector:
         return results
 
     def analyze_offline(self, audio: np.ndarray) -> list[OnsetEvent | None]:
-        """Analyze a complete audio signal.
+        """Analyze a complete audio signal with adaptive thresholding.
+
+        Uses a two-pass approach: first computes all spectral flux values,
+        then sets the detection threshold relative to the signal's own
+        flux distribution. This adapts to different input types (full mix
+        vs isolated drum stems from demucs).
 
         Args:
             audio: Mono float32 audio, normalized to [-1, 1].
@@ -133,7 +138,83 @@ class OnsetDetector:
             List of (OnsetEvent or None) at fps rate.
         """
         self.reset()
-        return self.process_chunk(audio)
+
+        if len(audio) == 0:
+            return []
+
+        num_frames = max(1, len(audio) // self._hop_length)
+
+        # Pass 1: compute all spectra and flux values
+        spectra: list[np.ndarray] = []
+        flux_values = np.zeros(num_frames)
+
+        for i in range(num_frames):
+            start = i * self._hop_length
+            end = min(start + self._hop_length, len(audio))
+            window = audio[start:end]
+            spectrum = self._compute_spectrum(window)
+            spectra.append(spectrum)
+
+            if i > 0:
+                flux_values[i] = self._spectral_flux_pair(spectra[i - 1], spectrum)
+
+        # Adaptive threshold: use the flux distribution
+        # Only consider positive (non-zero) flux values
+        positive_flux = flux_values[flux_values > 1e-10]
+
+        if len(positive_flux) > 0:
+            # Threshold = median + 0.5 * (90th percentile - median)
+            # This adapts to the signal level while staying selective
+            median_flux = float(np.median(positive_flux))
+            p90_flux = float(np.percentile(positive_flux, 90))
+            adaptive_threshold = median_flux + 0.5 * (p90_flux - median_flux)
+            # Floor: never go below 1% of the 90th percentile
+            adaptive_threshold = max(adaptive_threshold, p90_flux * 0.01)
+        else:
+            adaptive_threshold = self._threshold
+
+        # Pass 2: detect onsets using the adaptive threshold
+        results: list[OnsetEvent | None] = []
+        samples_since_onset = self._min_onset_gap_samples
+
+        for i in range(num_frames):
+            frame_time = i * self._hop_length / self._sr
+            samples_since_onset += self._hop_length
+
+            if (
+                flux_values[i] >= adaptive_threshold
+                and samples_since_onset >= self._min_onset_gap_samples
+            ):
+                onset_type = self._classify_onset(spectra[i])
+                strength = min(1.0, flux_values[i] / (adaptive_threshold * 5))
+                results.append(
+                    OnsetEvent(
+                        timestamp=frame_time,
+                        onset_type=onset_type,
+                        strength=strength,
+                    )
+                )
+                samples_since_onset = 0
+            else:
+                results.append(None)
+
+        return results
+
+    @staticmethod
+    def _spectral_flux_pair(prev: np.ndarray, curr: np.ndarray) -> float:
+        """Compute half-wave rectified spectral flux between two spectra.
+
+        Args:
+            prev: Previous frame magnitude spectrum.
+            curr: Current frame magnitude spectrum.
+
+        Returns:
+            Non-negative spectral flux value.
+        """
+        min_len = min(len(prev), len(curr))
+        diff = curr[:min_len] - prev[:min_len]
+        positive_diff = np.maximum(diff, 0.0)
+        return float(np.mean(positive_diff))
 
     # ── Internal ──────────────────────────────────────────────────
 

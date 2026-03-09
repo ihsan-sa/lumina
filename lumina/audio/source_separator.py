@@ -6,7 +6,8 @@ Separates audio into four stems using Meta's Hybrid Transformer Demucs
 - Vocals stem → VocalDetector (no instrumental bleed)
 - Bass stem → EnergyTracker sub-bass (already band-limited, no FFT needed)
 
-Uses the demucs v4 high-level API (``demucs.api.Separator``).
+Uses the demucs 4.0.x API: ``demucs.pretrained.get_model`` to load the
+model and ``demucs.apply.apply_model`` to run separation.
 """
 
 from __future__ import annotations
@@ -81,24 +82,25 @@ class SourceSeparator:
         else:
             self._device = device
 
-        self._separator: object | None = None
+        self._model: object | None = None
+        self._sources: list[str] | None = None
 
     def _ensure_loaded(self) -> None:
-        """Lazy-load the demucs Separator on first use."""
-        if self._separator is not None:
+        """Lazy-load the demucs model on first use."""
+        if self._model is not None:
             return
 
-        from demucs.api import Separator  # type: ignore[import-untyped]
+        from demucs.pretrained import get_model  # type: ignore[import-untyped]
 
         logger.info(
             "Loading demucs model '%s' on %s",
             self._model_name,
             self._device,
         )
-        self._separator = Separator(
-            model=self._model_name,
-            device=self._device,
-        )
+        model = get_model(self._model_name)
+        self._sources = model.sources  # e.g. ['drums', 'bass', 'other', 'vocals']
+        model.to(self._device)
+        self._model = model
 
     def separate(self, audio: np.ndarray, sr: int = 44100) -> StemSet:
         """Separate audio into four stems.
@@ -132,23 +134,33 @@ class SourceSeparator:
         Returns:
             StemSet with separated stems.
         """
-        sep = self._separator
+        from demucs.apply import apply_model  # type: ignore[import-untyped]
+
         n_samples = len(audio)
 
-        # Demucs expects stereo (2, N) tensor — duplicate mono channel
-        stereo = torch.from_numpy(audio).float().unsqueeze(0).expand(2, -1)
+        # Demucs expects (batch, channels, samples) — mono duplicated to stereo
+        mix = torch.from_numpy(audio).float().unsqueeze(0).expand(2, -1).unsqueeze(0)
+        # mix shape: (1, 2, N)
 
-        # Run separation: returns (origin, separated) tuple
-        # separated is a dict mapping stem name -> (channels, samples) tensor
-        _origin, separated = sep.separate_tensor(stereo, sr)
+        # apply_model returns (batch, sources, channels, samples)
+        with torch.no_grad():
+            estimates = apply_model(
+                self._model,
+                mix.to(self._device),
+                device=self._device,
+            )
+        # estimates shape: (1, n_sources, 2, N)
 
-        # Extract each stem: stereo -> mono via channel mean
+        # Map source index to name
+        sources = self._sources or ["drums", "bass", "other", "vocals"]
         stem_names = ("drums", "bass", "vocals", "other")
         stems: dict[str, np.ndarray] = {}
 
         for name in stem_names:
-            if name in separated:
-                stem_tensor = separated[name]  # (2, N)
+            if name in sources:
+                idx = sources.index(name)
+                # (1, 2, N) -> mean over channels -> (N,) mono
+                stem_tensor = estimates[0, idx]  # (2, N)
                 mono = stem_tensor.mean(dim=0).cpu().numpy().astype(np.float32)
                 # Truncate or pad to match input length exactly
                 if len(mono) > n_samples:
@@ -157,7 +169,7 @@ class SourceSeparator:
                     mono = np.pad(mono, (0, n_samples - len(mono)))
                 stems[name] = mono
             else:
-                logger.warning("Stem '%s' not found in demucs output", name)
+                logger.warning("Stem '%s' not found in model sources %s", name, sources)
                 stems[name] = audio.copy()
 
         return StemSet(
