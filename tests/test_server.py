@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 
+import numpy as np
 import pytest
+import websockets
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
-from lumina.web.server import LuminaServer
+from lumina.web.server import LuminaServer, _NumpyEncoder
 
 
 @pytest.fixture
@@ -197,3 +199,121 @@ def test_music_state_serialization() -> None:
     assert deserialized["genre_weights"]["festival_edm"] == 0.7
     assert deserialized["onset_type"] == "kick"
     assert deserialized["is_beat"] is True
+
+
+# ── Numpy type serialization ────────────────────────────────────
+
+
+def test_numpy_encoder_handles_all_types() -> None:
+    """_NumpyEncoder converts numpy scalars to native Python types."""
+    data = {
+        "float64": np.float64(0.75),
+        "float32": np.float32(0.5),
+        "int64": np.int64(42),
+        "int32": np.int32(7),
+        "bool_true": np.bool_(True),
+        "bool_false": np.bool_(False),
+        "array": np.array([1.0, 2.0, 3.0]),
+    }
+    serialized = json.dumps(data, cls=_NumpyEncoder)
+    deserialized = json.loads(serialized)
+
+    assert deserialized["float64"] == 0.75
+    assert isinstance(deserialized["float64"], float)
+    assert deserialized["int64"] == 42
+    assert isinstance(deserialized["int64"], int)
+    assert deserialized["bool_true"] is True
+    assert deserialized["bool_false"] is False
+    assert deserialized["array"] == [1.0, 2.0, 3.0]
+
+
+def test_numpy_encoder_without_numpy_types() -> None:
+    """_NumpyEncoder still works for plain Python types."""
+    data = {"a": 1, "b": 2.5, "c": True, "d": "hello", "e": None}
+    serialized = json.dumps(data, cls=_NumpyEncoder)
+    assert json.loads(serialized) == data
+
+
+@pytest.mark.asyncio
+async def test_broadcast_with_numpy_music_state(server: LuminaServer) -> None:
+    """MusicState containing numpy types serializes and broadcasts correctly."""
+    await server.start_broadcast()
+
+    client = TestClient(server.app)
+    with client.websocket_connect("/ws") as ws:
+        # Simulate what the real audio pipeline produces: numpy scalars
+        state = MusicState(
+            timestamp=np.float64(1.5),
+            bpm=np.float64(140.0),
+            beat_phase=np.float64(0.3),
+            bar_phase=np.float64(0.1),
+            is_beat=np.bool_(True),
+            is_downbeat=np.bool_(False),
+            energy=np.float64(0.8),
+            energy_derivative=np.float32(-0.1),
+            segment="drop",
+            genre_weights={"rage_trap": np.float64(0.7), "uk_bass": np.float64(0.3)},
+            vocal_energy=np.float64(0.2),
+            spectral_centroid=np.float64(3500.0),
+            sub_bass_energy=np.float64(0.6),
+            onset_type="kick",
+            drop_probability=np.float64(0.9),
+        )
+        commands = [FixtureCommand(fixture_id=1, red=200, special=180)]
+        server.state_queue.put_nowait((state, commands))
+
+        await asyncio.sleep(0.1)
+
+        # Should not crash — receive fixture_commands
+        cmd_msg = ws.receive_json()
+        assert cmd_msg["type"] == "fixture_commands"
+
+        # Then music_state with all numpy types converted
+        state_msg = ws.receive_json()
+        assert state_msg["type"] == "music_state"
+        s = state_msg["state"]
+        assert s["bpm"] == 140.0
+        assert isinstance(s["bpm"], float)
+        assert s["is_beat"] is True
+        assert isinstance(s["is_beat"], bool)
+        assert s["energy"] == 0.8
+        assert s["genre_weights"]["rage_trap"] == 0.7
+        assert isinstance(s["genre_weights"]["rage_trap"], float)
+
+    await server.stop()
+
+
+# ── Uvicorn server startup ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_binds_port_and_accepts_websocket() -> None:
+    """server.start() launches uvicorn so real WebSocket clients can connect."""
+    srv = LuminaServer(host="127.0.0.1", port=0)
+    # Port 0 lets the OS pick a free port — but uvicorn doesn't expose it easily,
+    # so we pick a specific high port for the test.
+    srv = LuminaServer(host="127.0.0.1", port=18765)
+    await srv.start()
+
+    try:
+        async with websockets.connect("ws://127.0.0.1:18765/ws") as ws:
+            assert srv.client_count == 1
+
+            # Push a frame through
+            state = MusicState(timestamp=0.0, bpm=120.0, energy=0.5)
+            commands = [FixtureCommand(fixture_id=1, red=128)]
+            srv.state_queue.put_nowait((state, commands))
+
+            # Receive fixture_commands
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+            msg = json.loads(raw)
+            assert msg["type"] == "fixture_commands"
+            assert msg["commands"][0]["red"] == 128
+
+            # Receive music_state
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+            msg = json.loads(raw)
+            assert msg["type"] == "music_state"
+            assert msg["state"]["bpm"] == 120.0
+    finally:
+        await srv.stop()

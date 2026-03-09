@@ -19,6 +19,7 @@ import json
 import logging
 from typing import Any
 
+import numpy as np
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -29,6 +30,21 @@ from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 
 logger = logging.getLogger(__name__)
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that converts numpy scalars to native Python types."""
+
+    def default(self, o: object) -> Any:
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.bool_):
+            return bool(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
 
 
 class LuminaServer:
@@ -80,25 +96,43 @@ class LuminaServer:
         return len(self._clients)
 
     async def start(self) -> None:
-        """Start the broadcast loop and uvicorn server."""
+        """Start the broadcast loop and uvicorn server.
+
+        Launches uvicorn as a background task and waits until it is
+        accepting connections before returning.  This allows the caller
+        to ``await start()`` and then proceed with other work while the
+        server keeps running.
+        """
         import uvicorn
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+
         config = uvicorn.Config(
             self._app,
             host=self._host,
             port=self._port,
             log_level="warning",
         )
-        server = uvicorn.Server(config)
-        await server.serve()
+        self._uvicorn_server = uvicorn.Server(config)
+        self._serve_task = asyncio.create_task(self._uvicorn_server.serve())
+
+        # Wait until uvicorn signals it has started
+        while not self._uvicorn_server.started:
+            await asyncio.sleep(0.05)
+
+        logger.info("WebSocket server listening on %s:%d", self._host, self._port)
 
     async def start_broadcast(self) -> None:
         """Start only the broadcast loop (for testing without uvicorn)."""
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
 
     async def stop(self) -> None:
-        """Cancel the broadcast loop and close all clients."""
+        """Shut down uvicorn, cancel the broadcast loop, and close all clients."""
+        if hasattr(self, "_uvicorn_server"):
+            self._uvicorn_server.should_exit = True
+        if hasattr(self, "_serve_task"):
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._serve_task
         if self._broadcast_task:
             self._broadcast_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -149,14 +183,16 @@ class LuminaServer:
                     "sequence": self._sequence,
                     "timestamp_ms": int(music_state.timestamp * 1000) & 0xFFFF,
                     "commands": [dataclasses.asdict(cmd) for cmd in commands],
-                }
+                },
+                cls=_NumpyEncoder,
             )
 
             state_msg = json.dumps(
                 {
                     "type": "music_state",
                     "state": dataclasses.asdict(music_state),
-                }
+                },
+                cls=_NumpyEncoder,
             )
 
             dead: list[WebSocket] = []

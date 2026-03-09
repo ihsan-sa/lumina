@@ -290,8 +290,8 @@ class LuminaApp:
         ]
         logger.info("Analysis complete: %d frames (%.1fs)", n, n * frame_interval)
 
-        # Start server and output loop
-        await self._server.start_broadcast()
+        # Start WebSocket server (uvicorn + broadcast loop), then output loop
+        await self._server.start()
 
         transport_task = asyncio.create_task(self._handle_transport())
         try:
