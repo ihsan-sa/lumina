@@ -1,6 +1,6 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Room } from "./components/Room";
 import { Fixture } from "./components/Fixture";
 import { ControlPanel } from "./components/ControlPanel";
@@ -24,9 +24,22 @@ function useMusicStatePolled(ref: React.MutableRefObject<MusicState | null>): Mu
 }
 
 export default function App() {
-  const { connected, commandsRef, musicStateRef, sendMessage } = useWebSocket();
+  const { connected, commandsRef, musicStateRef, playbackInfoRef, sendMessage } = useWebSocket();
   const audio = useAudio();
   const musicState = useMusicStatePolled(musicStateRef);
+  const [autoPlayActive, setAutoPlayActive] = useState(false);
+  const autoPlayTriggered = useRef(false);
+
+  // Auto-play: when we receive playback_start from the backend, mark active
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (playbackInfoRef.current && !autoPlayTriggered.current) {
+        autoPlayTriggered.current = true;
+        setAutoPlayActive(true);
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [playbackInfoRef]);
 
   return (
     <div className="flex h-screen w-screen">
@@ -42,6 +55,14 @@ export default function App() {
           ))}
           <OrbitControls target={[0, 1.2, 0]} maxPolarAngle={Math.PI * 0.85} />
         </Canvas>
+
+        {/* Auto-play banner */}
+        {autoPlayActive && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 px-4 py-1.5 bg-indigo-600/80 rounded text-xs text-white backdrop-blur">
+            Receiving light show from backend
+            {playbackInfoRef.current ? ` — ${playbackInfoRef.current.filename}` : ""}
+          </div>
+        )}
       </div>
 
       {/* Control panel */}

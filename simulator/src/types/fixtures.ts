@@ -66,6 +66,11 @@ export type ServerMessage =
   | {
       type: "music_state";
       state: MusicState;
+    }
+  | {
+      type: "playback_start";
+      filename: string;
+      duration: number;
     };
 
 export type ClientMessage =

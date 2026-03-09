@@ -5,10 +5,16 @@ const WS_URL = `ws://${window.location.hostname}:8765/ws`;
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 
+export interface PlaybackInfo {
+  filename: string;
+  duration: number;
+}
+
 export interface WebSocketHandle {
   connected: boolean;
   commandsRef: React.MutableRefObject<Map<number, FixtureCommand>>;
   musicStateRef: React.MutableRefObject<MusicState | null>;
+  playbackInfoRef: React.MutableRefObject<PlaybackInfo | null>;
   sendMessage: (msg: ClientMessage) => void;
 }
 
@@ -35,6 +41,7 @@ export function useWebSocket(): WebSocketHandle {
   const wsRef = useRef<WebSocket | null>(null);
   const commandsRef = useRef<Map<number, FixtureCommand>>(new Map());
   const musicStateRef = useRef<MusicState | null>(null);
+  const playbackInfoRef = useRef<PlaybackInfo | null>(null);
   const reconnectDelay = useRef(RECONNECT_MIN_MS);
   const mountedRef = useRef(true);
 
@@ -71,6 +78,11 @@ export function useWebSocket(): WebSocketHandle {
           }
         } else if (msg.type === "music_state") {
           musicStateRef.current = { ...DEFAULT_MUSIC_STATE, ...msg.state };
+        } else if (msg.type === "playback_start") {
+          playbackInfoRef.current = {
+            filename: msg.filename,
+            duration: msg.duration,
+          };
         }
       } catch {
         // Ignore malformed messages
@@ -93,5 +105,5 @@ export function useWebSocket(): WebSocketHandle {
     }
   }, []);
 
-  return { connected, commandsRef, musicStateRef, sendMessage };
+  return { connected, commandsRef, musicStateRef, playbackInfoRef, sendMessage };
 }

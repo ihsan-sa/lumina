@@ -59,6 +59,7 @@ class AppConfig:
     fps: int = 60
     sr: int = 44100
     udp_target: str | None = None
+    debug: bool = False
 
 
 def _assemble_music_state(
@@ -223,6 +224,13 @@ class LuminaApp:
         # Start WebSocket server (uvicorn + broadcast loop), then output loop
         await self._server.start()
 
+        # Tell connecting clients about the audio file for auto-play
+        if self._config.file_path:
+            self._server.set_playback_info(
+                filename=self._config.file_path.name,
+                duration=duration,
+            )
+
         transport_task = asyncio.create_task(self._handle_transport())
         try:
             await self._output_loop()
@@ -242,6 +250,24 @@ class LuminaApp:
             if self._playing:
                 state = self._music_states[self._frame_index]
                 commands = self._engine.generate(state)
+
+                # Debug: print MusicState once per second
+                if self._config.debug and self._frame_index % self._config.fps == 0:
+                    top_genre = max(
+                        state.genre_weights,
+                        key=state.genre_weights.get,
+                        default="?",  # type: ignore[arg-type]
+                    )
+                    logger.info(
+                        "DBG t=%.1f seg=%-10s e=%.2f de=%+.2f onset=%-5s drop=%.2f genre=%s",
+                        state.timestamp,
+                        state.segment,
+                        state.energy,
+                        state.energy_derivative,
+                        state.onset_type or "—",
+                        state.drop_probability,
+                        top_genre,
+                    )
 
                 # Push to WebSocket server (drop if full)
                 with contextlib.suppress(asyncio.QueueFull):
@@ -319,6 +345,11 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         default=None,
         help="UDP target for physical fixtures (IP:PORT)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print MusicState once per second for pipeline debugging",
+    )
     args = parser.parse_args(argv)
 
     return AppConfig(
@@ -329,6 +360,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         fps=args.fps,
         sr=args.sr,
         udp_target=args.udp_target,
+        debug=args.debug,
     )
 
 

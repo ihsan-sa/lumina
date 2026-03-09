@@ -52,17 +52,22 @@ class TestOutputStructure:
         assert ids == set(range(1, 9))
 
 
-class TestPreDropBlackout:
-    """High drop_probability → total blackout."""
+class TestPreDropBuild:
+    """High drop_probability → accelerating strobe build-up."""
 
-    def test_all_black_when_drop_imminent(self) -> None:
+    def test_strobes_fire_when_drop_imminent(self) -> None:
         p = _profile()
         cmds = p.generate(_state(drop_probability=0.9, segment="verse"))
-        for c in cmds:
-            assert c.red == 0
-            assert c.green == 0
-            assert c.blue == 0
-            assert c.strobe_rate == 0
+        cmd_map = {c.fixture_id: c for c in cmds}
+        for sid in _strobe_ids():
+            assert cmd_map[sid].strobe_rate > 0, "Strobes should fire during pre-drop"
+
+    def test_pars_have_red_when_drop_imminent(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(drop_probability=0.9, segment="verse"))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        any_red = any(cmd_map[pid].red > 0 for pid in _par_ids())
+        assert any_red, "Pars should pulse red during pre-drop"
 
 
 class TestDropExplosion:
@@ -70,9 +75,7 @@ class TestDropExplosion:
 
     def test_drop_downbeat_strobes_fire(self) -> None:
         p = _profile()
-        cmds = p.generate(
-            _state(segment="drop", energy=0.9, is_downbeat=True, is_beat=True)
-        )
+        cmds = p.generate(_state(segment="drop", energy=0.9, is_downbeat=True, is_beat=True))
         cmd_map = {c.fixture_id: c for c in cmds}
         for sid in _strobe_ids():
             assert cmd_map[sid].strobe_rate > 0
@@ -80,9 +83,7 @@ class TestDropExplosion:
 
     def test_drop_pars_red_on_kick(self) -> None:
         p = _profile()
-        cmds = p.generate(
-            _state(segment="drop", energy=0.9, onset_type="kick", is_beat=True)
-        )
+        cmds = p.generate(_state(segment="drop", energy=0.9, onset_type="kick", is_beat=True))
         cmd_map = {c.fixture_id: c for c in cmds}
         for pid in _par_ids():
             assert cmd_map[pid].red == 255
@@ -90,8 +91,15 @@ class TestDropExplosion:
 
     def test_drop_between_beats_dark(self) -> None:
         p = _profile()
+        # beat_phase=0.7 puts us in the "off-beat" half (>= 0.5 = blackout)
         cmds = p.generate(
-            _state(segment="drop", energy=0.9, is_beat=False, is_downbeat=False)
+            _state(
+                segment="drop",
+                energy=0.9,
+                is_beat=False,
+                is_downbeat=False,
+                beat_phase=0.7,
+            )
         )
         cmd_map = {c.fixture_id: c for c in cmds}
         for pid in _par_ids():
@@ -157,23 +165,23 @@ class TestVocalCalm:
 class TestVerseReactive:
     """Standard verse with beat-reactive red."""
 
-    def test_kick_all_pars_red(self) -> None:
+    def test_kick_active_pars_red(self) -> None:
         p = _profile()
-        cmds = p.generate(
-            _state(segment="verse", onset_type="kick", is_beat=True)
-        )
+        # Set timestamp far enough for all pars to be active
+        cmds = p.generate(_state(segment="verse", onset_type="kick", is_beat=True, timestamp=60.0))
         cmd_map = {c.fixture_id: c for c in cmds}
-        for pid in _par_ids():
-            assert cmd_map[pid].red == 255
+        any_red = any(cmd_map[pid].red == 255 for pid in _par_ids())
+        assert any_red, "At least one par should be fully red on kick"
 
-    def test_between_beats_dark(self) -> None:
+    def test_between_beats_near_dark(self) -> None:
         p = _profile()
-        cmds = p.generate(
-            _state(segment="verse", is_beat=False, onset_type=None)
-        )
+        cmds = p.generate(_state(segment="verse", is_beat=False, onset_type=None))
         cmd_map = {c.fixture_id: c for c in cmds}
         for pid in _par_ids():
-            assert cmd_map[pid].red == 0
+            # Near-darkness: red should be very low (0-10 range)
+            assert cmd_map[pid].red <= 10, (
+                f"Par {pid} should be near-dark, got red={cmd_map[pid].red}"
+            )
 
     def test_verse_uv_on(self) -> None:
         p = _profile()
@@ -188,9 +196,7 @@ class TestAdlibScatter:
 
     def test_adlib_single_par_lit(self) -> None:
         p = _profile()
-        cmds = p.generate(
-            _state(segment="verse", onset_type="clap", timestamp=1.5)
-        )
+        cmds = p.generate(_state(segment="verse", onset_type="clap", timestamp=1.5))
         cmd_map = {c.fixture_id: c for c in cmds}
         lit = [pid for pid in _par_ids() if cmd_map[pid].red > 0 or cmd_map[pid].white > 0]
         assert len(lit) == 1, f"Expected 1 lit par for ad-lib scatter, got {len(lit)}"

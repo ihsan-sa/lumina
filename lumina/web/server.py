@@ -67,6 +67,7 @@ class LuminaServer:
         self._clients: set[WebSocket] = set()
         self._broadcast_task: asyncio.Task[None] | None = None
         self._sequence = 0
+        self._playback_info: dict[str, Any] | None = None
 
         self._app = Starlette(
             routes=[
@@ -89,6 +90,19 @@ class LuminaServer:
     def app(self) -> Starlette:
         """The ASGI application (for uvicorn or testing)."""
         return self._app
+
+    def set_playback_info(self, filename: str, duration: float) -> None:
+        """Set playback info to send to newly connected clients.
+
+        Args:
+            filename: Audio file name.
+            duration: Track duration in seconds.
+        """
+        self._playback_info = {
+            "type": "playback_start",
+            "filename": filename,
+            "duration": duration,
+        }
 
     @property
     def client_count(self) -> int:
@@ -146,6 +160,11 @@ class LuminaServer:
         await websocket.accept()
         self._clients.add(websocket)
         logger.info("Client connected (%d total)", len(self._clients))
+
+        # Send playback info so the simulator can auto-start audio
+        if self._playback_info is not None:
+            with contextlib.suppress(Exception):
+                await websocket.send_text(json.dumps(self._playback_info))
 
         try:
             while True:
