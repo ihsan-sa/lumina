@@ -274,6 +274,62 @@ class TestOfflineAnalysis:
         assert first_half_avg > second_half_avg
 
 
+# ── Bass stem analysis ───────────────────────────────────────────────
+
+
+class TestBassStemAnalysis:
+    def _make_tracker(self, **kwargs: float | int) -> EnergyTracker:
+        return EnergyTracker(sr=44100, fps=60, **kwargs)
+
+    def test_bass_stem_replaces_sub_bass(self) -> None:
+        """Sub-bass energy should come from bass stem, not FFT bands."""
+        tracker = self._make_tracker()
+        # Full mix: high-frequency sine (no sub-bass content)
+        audio = make_sine(4000.0, 1.0, amp=0.8)
+        # Bass stem: low-frequency sine (strong bass)
+        bass = make_sine(50.0, 1.0, amp=0.8)
+
+        frames = tracker.analyze_offline_with_bass_stem(audio, bass)
+        assert len(frames) > 0
+        # Sub-bass should reflect the bass stem, not the high-freq mix
+        avg_sub = np.mean([f.sub_bass_energy for f in frames[5:]])
+        assert avg_sub > 0.3
+
+    def test_silent_bass_gives_zero_sub_bass(self) -> None:
+        """Silent bass stem should give zero sub-bass energy."""
+        tracker = self._make_tracker()
+        audio = make_sine(440.0, 1.0, amp=0.5)
+        bass = make_silence(1.0)
+
+        frames = tracker.analyze_offline_with_bass_stem(audio, bass)
+        for f in frames:
+            assert f.sub_bass_energy < 0.01
+
+    def test_energy_unchanged_with_bass_stem(self) -> None:
+        """Overall energy should still come from full mix, not bass stem."""
+        tracker = self._make_tracker(smoothing=0.3)
+        audio = make_sine(440.0, 1.0, amp=0.8)
+        bass = make_silence(1.0)
+
+        frames_with_stem = tracker.analyze_offline_with_bass_stem(audio, bass)
+        tracker.reset()
+        frames_without = tracker.analyze_offline(audio)
+
+        # Energy values should be identical (bass stem only affects sub_bass)
+        for f1, f2 in zip(frames_with_stem, frames_without):
+            assert f1.energy == pytest.approx(f2.energy, abs=0.001)
+
+    def test_bass_stem_normalized(self) -> None:
+        """Bass stem sub-bass should be in [0, 1]."""
+        tracker = self._make_tracker()
+        audio = make_sine(440.0, 2.0, amp=1.0)
+        bass = make_sine(60.0, 2.0, amp=1.0)
+
+        frames = tracker.analyze_offline_with_bass_stem(audio, bass)
+        for f in frames:
+            assert 0.0 <= f.sub_bass_energy <= 1.0
+
+
 # ── Reset ─────────────────────────────────────────────────────────────
 
 

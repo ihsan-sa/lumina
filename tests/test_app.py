@@ -1,4 +1,4 @@
-"""Tests for LUMINA app entry point — MusicState assembly and CLI."""
+"""Tests for LUMINA app entry point — MusicState assembly, CLI, and stem routing."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from lumina.audio.genre_classifier import GenreFrame
 from lumina.audio.models import MusicState
 from lumina.audio.onset_detector import OnsetEvent
 from lumina.audio.segment_classifier import SegmentFrame
+from lumina.audio.source_separator import StemSet
 from lumina.audio.vocal_detector import VocalFrame
 
 # ── Fixtures ────────────────────────────────────────────────────
@@ -227,3 +228,54 @@ class TestAppConfig:
         assert config.fps == 30
         assert config.sr == 22050
         assert config.udp_target == "192.168.1.50:5150"
+
+
+# ── TestStemRouting ────────────────────────────────────────────
+
+
+class TestStemRouting:
+    """Tests verifying that the file mode pipeline imports are wired correctly."""
+
+    def test_source_separator_importable(self) -> None:
+        """SourceSeparator should be importable from app."""
+        from lumina.app import SourceSeparator
+
+        assert SourceSeparator is not None
+
+    def test_structural_analyzer_importable(self) -> None:
+        """StructuralAnalyzer should be importable from app."""
+        from lumina.app import StructuralAnalyzer
+
+        assert StructuralAnalyzer is not None
+
+    def test_stemset_has_expected_fields(self) -> None:
+        """StemSet should have drums, bass, vocals, other fields."""
+        import numpy as np
+
+        n = 1000
+        stems = StemSet(
+            drums=np.zeros(n, dtype=np.float32),
+            bass=np.zeros(n, dtype=np.float32),
+            vocals=np.zeros(n, dtype=np.float32),
+            other=np.zeros(n, dtype=np.float32),
+            sample_rate=44100,
+        )
+        assert hasattr(stems, "drums")
+        assert hasattr(stems, "bass")
+        assert hasattr(stems, "vocals")
+        assert hasattr(stems, "other")
+        assert stems.sample_rate == 44100
+
+    def test_energy_tracker_has_bass_stem_method(self) -> None:
+        """EnergyTracker should have analyze_offline_with_bass_stem."""
+        from lumina.audio.energy_tracker import EnergyTracker
+
+        tracker = EnergyTracker()
+        assert hasattr(tracker, "analyze_offline_with_bass_stem")
+
+    def test_genre_classifier_has_classify_file(self) -> None:
+        """GenreClassifier should have classify_file method."""
+        from lumina.audio.genre_classifier import GenreClassifier
+
+        clf = GenreClassifier()
+        assert hasattr(clf, "classify_file")

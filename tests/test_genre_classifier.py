@@ -389,6 +389,85 @@ class TestOfflineClassification:
         assert first.genre_weights[top_profile] > 0.15
 
 
+# ── File mode genre lock ─────────────────────────────────────────────
+
+
+class TestGenreLock:
+    def _make_classifier(self, **kwargs: float | int) -> GenreClassifier:
+        return GenreClassifier(fps=60, **kwargs)
+
+    def test_all_frames_identical(self) -> None:
+        """classify_file should return identical frames for every position."""
+        clf = self._make_classifier()
+        n = 600
+        result = clf.classify_file(
+            energies=[0.65] * n,
+            spectral_centroids=[3500.0] * n,
+            sub_bass_energies=[0.6] * n,
+            has_onsets=[i % 3 == 0 for i in range(n)],
+            vocal_energies=[0.3] * n,
+            drop_probabilities=[0.3] * n,
+        )
+        assert len(result) == n
+        # Every frame should be the same object
+        for frame in result:
+            assert frame is result[0]
+
+    def test_no_genre_drift(self) -> None:
+        """Genre should not change over time in file mode."""
+        clf = self._make_classifier()
+        n = 3600  # 60s at 60fps
+        result = clf.classify_file(
+            energies=[0.65] * n,
+            spectral_centroids=[3500.0] * n,
+            sub_bass_energies=[0.6] * n,
+            has_onsets=[i % 3 == 0 for i in range(n)],
+            vocal_energies=[0.3] * n,
+            drop_probabilities=[0.3] * n,
+        )
+        first_weights = result[0].genre_weights
+        last_weights = result[-1].genre_weights
+        # Since all frames are identical, weights must match exactly
+        assert first_weights == last_weights
+
+    def test_rage_trap_locked(self) -> None:
+        """Rage trap features should lock to rage_trap as top profile."""
+        clf = self._make_classifier()
+        n = 300
+        result = clf.classify_file(
+            energies=[0.65] * n,
+            spectral_centroids=[3500.0] * n,
+            sub_bass_energies=[0.60] * n,
+            has_onsets=[i % 3 == 0 for i in range(n)],
+            vocal_energies=[0.35] * n,
+            drop_probabilities=[0.30] * n,
+        )
+        top = max(result[0].genre_weights, key=result[0].genre_weights.get)  # type: ignore[arg-type]
+        top_3 = sorted(result[0].genre_weights.items(), key=lambda x: x[1], reverse=True)
+        top_3_names = [p[0] for p in top_3[:3]]
+        assert "rage_trap" in top_3_names
+
+    def test_file_empty_input(self) -> None:
+        """Empty input should return empty list."""
+        clf = self._make_classifier()
+        result = clf.classify_file([], [], [], [], [], [])
+        assert result == []
+
+    def test_file_weights_sum_to_one(self) -> None:
+        """Locked genre weights should sum to 1.0."""
+        clf = self._make_classifier()
+        result = clf.classify_file(
+            energies=[0.5] * 120,
+            spectral_centroids=[4000.0] * 120,
+            sub_bass_energies=[0.4] * 120,
+            has_onsets=[True, False] * 60,
+            vocal_energies=[0.5] * 120,
+            drop_probabilities=[0.2] * 120,
+        )
+        total = sum(result[0].genre_weights.values())
+        assert total == pytest.approx(1.0, abs=0.01)
+
+
 # ── Reset ─────────────────────────────────────────────────────────────
 
 

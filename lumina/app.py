@@ -29,7 +29,9 @@ from lumina.audio.energy_tracker import EnergyFrame, EnergyTracker
 from lumina.audio.genre_classifier import GenreClassifier, GenreFrame
 from lumina.audio.models import MusicState
 from lumina.audio.onset_detector import OnsetDetector, OnsetEvent
-from lumina.audio.segment_classifier import SegmentClassifier, SegmentFrame
+from lumina.audio.segment_classifier import SegmentFrame
+from lumina.audio.source_separator import SourceSeparator
+from lumina.audio.structural_analyzer import StructuralAnalyzer
 from lumina.audio.vocal_detector import VocalDetector, VocalFrame
 from lumina.control.protocol import encode_packet
 from lumina.lighting.engine import LightingEngine
@@ -136,7 +138,16 @@ class LuminaApp:
             logger.error("Live mode not yet implemented")
 
     async def _run_file_mode(self) -> None:
-        """Offline analysis + playback at fps rate."""
+        """Offline analysis + playback at fps rate.
+
+        Pipeline:
+        1. Load audio
+        2. Source separation (demucs)
+        3. Beat/onset on drums stem, vocals on vocal stem
+        4. Energy from full mix + bass stem for sub-bass
+        5. Structural analysis (replaces frame-by-frame segment classifier)
+        6. Genre classification (locked for entire track)
+        """
         if not self._config.file_path:
             logger.error("No file path specified for file mode")
             return
@@ -160,21 +171,32 @@ class LuminaApp:
 
         fps = self._config.fps
 
+        # Source separation (demucs — GPU heavy, run in executor)
+        logger.info("Running source separation (demucs)...")
+        separator = SourceSeparator()
+        stems = await loop.run_in_executor(None, separator.separate, audio, sr)
+        logger.info("Source separation complete")
+
         # Create analyzers
         beat_detector = BeatDetector(sr=sr, fps=fps)
         energy_tracker = EnergyTracker(sr=sr, fps=fps)
         onset_detector = OnsetDetector(sr=sr, fps=fps)
         vocal_detector = VocalDetector(sr=sr, fps=fps)
-        segment_classifier = SegmentClassifier(fps=fps)
         genre_classifier = GenreClassifier(fps=fps)
         drop_predictor = DropPredictor(fps=fps)
+        structural_analyzer = StructuralAnalyzer(sr=sr, fps=fps)
 
-        # Run analysis (beat_detector uses madmom — heavy, run in executor)
+        # Run analysis with stem routing:
+        # - BeatDetector, OnsetDetector → drums stem
+        # - VocalDetector → vocals stem
+        # - EnergyTracker → full mix + bass stem
         logger.info("Analyzing audio...")
-        beat_results = await loop.run_in_executor(None, beat_detector.analyze_offline, audio)
-        energy_results = energy_tracker.analyze_offline(audio)
-        onset_results = onset_detector.analyze_offline(audio)
-        vocal_results = vocal_detector.analyze_offline(audio)
+        beat_results = await loop.run_in_executor(
+            None, beat_detector.analyze_offline, stems.drums
+        )
+        onset_results = onset_detector.analyze_offline(stems.drums)
+        vocal_results = vocal_detector.analyze_offline(stems.vocals)
+        energy_results = energy_tracker.analyze_offline_with_bass_stem(audio, stems.bass)
 
         # Align to shortest result set
         n = min(len(beat_results), len(energy_results), len(onset_results), len(vocal_results))
@@ -190,17 +212,21 @@ class LuminaApp:
         vocals = [vocal_results[i].vocal_energy for i in range(n)]
         onset_bools = [onset_results[i] is not None for i in range(n)]
 
-        # Derived classifiers
-        segment_classifier.set_track_duration(duration)
+        # Drop predictor
         drop_results = drop_predictor.process_features(
             energies, derivs, centroids, basses, vocals, onset_bools
         )
-        segment_results = segment_classifier.classify_offline(
-            energies, derivs, centroids, basses, vocals, onset_bools
-        )
 
+        # Structural analysis (replaces SegmentClassifier in file mode)
+        logger.info("Running structural analysis...")
+        structural_map = structural_analyzer.analyze(
+            audio, stems, beat_results, energy_results, onset_results, vocal_results
+        )
+        segment_results = structural_analyzer.map_to_frames(structural_map, n, fps)
+
+        # Genre classification (locked for entire track)
         drop_probs = [drop_results[i].drop_probability for i in range(n)]
-        genre_results = genre_classifier.classify_offline(
+        genre_results = genre_classifier.classify_file(
             energies, centroids, basses, onset_bools, vocals, drop_probs
         )
 

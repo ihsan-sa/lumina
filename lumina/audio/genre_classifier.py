@@ -382,6 +382,78 @@ class GenreClassifier:
             for i in range(n)
         ]
 
+    def classify_file(
+        self,
+        energies: list[float],
+        spectral_centroids: list[float],
+        sub_bass_energies: list[float],
+        has_onsets: list[bool],
+        vocal_energies: list[float],
+        drop_probabilities: list[float],
+    ) -> list[GenreFrame]:
+        """Classify genre for a file with a single locked result.
+
+        Computes aggregate features from the first 30s of the track,
+        classifies once, and returns the same GenreFrame for every frame.
+        No EMA, no rolling window, no drift.
+
+        Args:
+            energies: Energy per frame.
+            spectral_centroids: Centroid per frame.
+            sub_bass_energies: Sub-bass per frame.
+            has_onsets: Onset flags per frame.
+            vocal_energies: Vocal energy per frame.
+            drop_probabilities: Drop probability per frame.
+
+        Returns:
+            List of identical GenreFrame, one per input frame.
+        """
+        n = len(energies)
+        if n == 0:
+            return []
+
+        # Use first 30s of features (or all if shorter)
+        window = min(n, self._fps * 30)
+        e_slice = energies[:window]
+        c_slice = spectral_centroids[:window]
+        b_slice = sub_bass_energies[:window]
+        o_slice = has_onsets[:window]
+        v_slice = vocal_energies[:window]
+        d_slice = drop_probabilities[:window]
+
+        # Compute aggregate features (same keys as _compute_features)
+        features: dict[str, float] = {
+            "energy_mean": float(np.mean(e_slice)),
+            "energy_variance": float(np.var(e_slice)),
+            "spectral_centroid_norm": float(
+                np.mean([min(1.0, c / 10000.0) for c in c_slice])
+            ),
+            "sub_bass_ratio": float(np.mean(b_slice)),
+            "onset_density": float(np.mean([1.0 if o else 0.0 for o in o_slice])),
+            "vocal_ratio": float(np.mean(v_slice)),
+            "drop_tendency": float(np.mean(d_slice)),
+        }
+
+        # Classify once
+        family_weights = self._classify_family(features)
+        genre_weights = self._classify_profiles(features, family_weights)
+        top_family = max(family_weights, key=family_weights.get)  # type: ignore[arg-type]
+
+        locked_frame = GenreFrame(
+            family=top_family,
+            family_weights=family_weights,
+            genre_weights=genre_weights,
+        )
+
+        logger.info(
+            "Genre locked: %s (top profile: %s @ %.1f%%)",
+            top_family,
+            max(genre_weights, key=genre_weights.get),  # type: ignore[arg-type]
+            max(genre_weights.values()) * 100,
+        )
+
+        return [locked_frame] * n
+
     # ── Internal ──────────────────────────────────────────────────
 
     def _compute_features(self) -> dict[str, float]:

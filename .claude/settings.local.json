@@ -10,7 +10,9 @@
       "Bash(npx eslint:*)",
       "Bash(npx vite:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(wc:*)",
+      "Bash(pip show:*)"
     ]
   }
 }

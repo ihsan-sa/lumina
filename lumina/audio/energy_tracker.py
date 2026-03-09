@@ -15,7 +15,6 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.signal import lfilter
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +149,58 @@ class EnergyTracker:
             window = audio[start:end]
             frame = self._analyze_window(window)
             frames.append(frame)
+
+        return frames
+
+    def analyze_offline_with_bass_stem(
+        self,
+        audio: np.ndarray,
+        bass_stem: np.ndarray,
+    ) -> list[EnergyFrame]:
+        """Analyze audio with sub-bass computed from an isolated bass stem.
+
+        Uses the full mix for energy, derivative, and spectral centroid,
+        but replaces the sub-bass energy with RMS from the demucs-isolated
+        bass stem (already band-limited, no FFT filtering needed).
+
+        Args:
+            audio: Mono float32 full-mix audio.
+            bass_stem: Mono float32 isolated bass stem (same length as audio).
+
+        Returns:
+            List of EnergyFrame at fps rate.
+        """
+        # Run standard analysis on the full mix
+        frames = self.analyze_offline(audio)
+
+        if len(frames) == 0:
+            return frames
+
+        num_frames = len(frames)
+
+        # Compute per-frame bass RMS from the isolated stem
+        bass_rms = np.zeros(num_frames, dtype=np.float64)
+        for i in range(num_frames):
+            start = i * self._hop_length
+            end = min(start + self._hop_length, len(bass_stem))
+            if end > start:
+                window = bass_stem[start:end]
+                bass_rms[i] = float(np.sqrt(np.mean(window**2)))
+
+        # Normalize using global peak of the bass stem
+        peak = float(np.max(bass_rms)) if len(bass_rms) > 0 else 1e-6
+        if peak < 1e-6:
+            peak = 1e-6
+
+        # Replace sub_bass_energy in each frame
+        for i in range(num_frames):
+            normalized = min(1.0, bass_rms[i] / peak)
+            frames[i] = EnergyFrame(
+                energy=frames[i].energy,
+                energy_derivative=frames[i].energy_derivative,
+                spectral_centroid=frames[i].spectral_centroid,
+                sub_bass_energy=normalized,
+            )
 
         return frames
 
