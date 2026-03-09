@@ -201,7 +201,7 @@ class BaseProfile(ABC):
         intensity: float = 1.0,
         strobe_rate: int = 0,
         strobe_intensity: int = 0,
-        special: int = 0,
+        special: int | None = None,
     ) -> FixtureCommand:
         """Build a FixtureCommand for a fixture.
 
@@ -216,7 +216,8 @@ class BaseProfile(ABC):
             intensity: Master intensity 0.0-1.0.
             strobe_rate: Strobe rate 0-255.
             strobe_intensity: Strobe brightness 0-255.
-            special: Override for the special byte.
+            special: Override for the special byte.  If None, pars and UV
+                bars auto-derive from intensity.
 
         Returns:
             FixtureCommand for this fixture.
@@ -225,6 +226,7 @@ class BaseProfile(ABC):
         r, g, b, w = scaled.to_bytes()
 
         if fixture.fixture_type == FixtureType.PAR:
+            sp = special if special is not None else _clamp8(intensity)
             return FixtureCommand(
                 fixture_id=fixture.fixture_id,
                 red=r,
@@ -233,7 +235,7 @@ class BaseProfile(ABC):
                 white=w,
                 strobe_rate=0,
                 strobe_intensity=0,
-                special=special if special else _clamp8(intensity),
+                special=sp,
             )
         elif fixture.fixture_type == FixtureType.STROBE:
             return FixtureCommand(
@@ -244,9 +246,10 @@ class BaseProfile(ABC):
                 white=w,
                 strobe_rate=strobe_rate,
                 strobe_intensity=strobe_intensity,
-                special=special,
+                special=special if special is not None else 0,
             )
         else:  # UV
+            sp = special if special is not None else _clamp8(intensity)
             return FixtureCommand(
                 fixture_id=fixture.fixture_id,
                 red=0,
@@ -255,7 +258,7 @@ class BaseProfile(ABC):
                 white=0,
                 strobe_rate=0,
                 strobe_intensity=0,
-                special=special if special else _clamp8(intensity),
+                special=sp,
             )
 
     def _blackout(self) -> list[FixtureCommand]:
@@ -264,7 +267,7 @@ class BaseProfile(ABC):
         Returns:
             List of blackout commands for every fixture.
         """
-        return [self._cmd(f) for f in self._map.all]
+        return [self._cmd(f, BLACK, intensity=0.0) for f in self._map.all]
 
     def _all_color(self, color: Color, intensity: float = 1.0) -> list[FixtureCommand]:
         """Set all pars to a single color.
@@ -281,7 +284,7 @@ class BaseProfile(ABC):
             if f.fixture_type == FixtureType.PAR:
                 commands.append(self._cmd(f, color, intensity))
             else:
-                commands.append(self._cmd(f))
+                commands.append(self._cmd(f, BLACK, intensity=0.0))
         return commands
 
     # ─── Spatial patterns ────────────────────────────────────────
@@ -493,7 +496,7 @@ class BaseProfile(ABC):
                 merged[cmd.fixture_id] = cmd
         else:
             for f in self._map.all:
-                merged[f.fixture_id] = self._cmd(f)
+                merged[f.fixture_id] = self._cmd(f, BLACK, intensity=0.0)
 
         for source in sources:
             merged.update(source)
