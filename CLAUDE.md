@@ -107,7 +107,36 @@ class FixtureCommand:
     special: int          # Fixture-type-specific (UV level, laser pattern, etc.)
 ```
 
-Every fixture receives the same 7-byte channel format regardless of type. Fixtures ignore irrelevant fields (e.g., a UV bar only reads `special` as its intensity, ignores RGBW and strobe fields).
+Every fixture receives the same 8-byte command (1-byte fixture_id + 7 channel bytes) regardless of type. Fixtures ignore irrelevant fields (e.g., a UV bar only reads `special` as its intensity, ignores RGBW and strobe fields).
+
+### UDP Packet Format (implemented in `lumina/control/protocol.py`)
+
+Protocol constants:
+- **Magic:** `0x4C55` ("LU" in ASCII)
+- **Version:** `1`
+- **Port:** `5150`
+- **Max fixtures per packet:** `32`
+- **Max packet size:** 265 bytes (9-byte header + 32 × 8-byte commands)
+
+```
+Header (9 bytes, little-endian):
+  magic:         uint16  (0x4C55)
+  version:       uint8   (1)
+  packet_type:   uint8   (0x01=COMMAND, 0x10=DISCOVER_REQ, 0x11=DISCOVER_RESP, 0x20=HEARTBEAT, 0x30=CONFIG)
+  sequence:      uint16  (wraps at 65535)
+  timestamp_ms:  uint16  (wraps at 65535)
+  fixture_count: uint8   (0-32)
+
+Payload (fixture_count × 8 bytes each):
+  fixture_id:       uint8
+  red:              uint8
+  green:            uint8
+  blue:             uint8
+  white:            uint8
+  strobe_rate:      uint8
+  strobe_intensity: uint8
+  special:          uint8
+```
 
 ---
 
