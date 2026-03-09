@@ -239,51 +239,75 @@ class LuminaApp:
             await self._server.stop()
 
     async def _output_loop(self) -> None:
-        """Play back pre-computed MusicState list at fps rate."""
+        """Play back pre-computed MusicState list at fps rate.
+
+        Uses absolute time tracking: each frame has a target wall-clock
+        time (base + frame_index * interval).  If a frame runs late the
+        next sleep is shortened to catch up, keeping average playback at
+        1.0x real-time.
+        """
         frame_interval = 1.0 / self._config.fps
         n = len(self._music_states)
         seq = 0
 
+        # Absolute time reference — frame 0 plays at base_time
+        base_time = time.monotonic()
+
         while self._frame_index < n:
-            t_start = time.monotonic()
+            if not self._playing:
+                await asyncio.sleep(0.05)
+                # Re-anchor so we don't fast-forward after unpause
+                base_time = time.monotonic() - self._frame_index * frame_interval
+                continue
 
-            if self._playing:
-                state = self._music_states[self._frame_index]
-                commands = self._engine.generate(state)
+            t0 = time.monotonic()
+            state = self._music_states[self._frame_index]
+            commands = self._engine.generate(state)
+            t_gen = time.monotonic()
 
-                # Debug: print MusicState once per second
-                if self._config.debug and self._frame_index % self._config.fps == 0:
-                    top_genre = max(
-                        state.genre_weights,
-                        key=state.genre_weights.get,
-                        default="?",  # type: ignore[arg-type]
-                    )
-                    logger.info(
-                        "DBG t=%.1f seg=%-10s e=%.2f de=%+.2f onset=%-5s drop=%.2f genre=%s",
-                        state.timestamp,
-                        state.segment,
-                        state.energy,
-                        state.energy_derivative,
-                        state.onset_type or "—",
-                        state.drop_probability,
-                        top_genre,
-                    )
+            # Debug: timing + MusicState once per second
+            if self._config.debug and self._frame_index % self._config.fps == 0:
+                gen_ms = (t_gen - t0) * 1000
+                wall_elapsed = t_gen - base_time
+                ratio = state.timestamp / wall_elapsed if wall_elapsed > 0.1 else 0.0
+                top_genre = max(
+                    state.genre_weights,
+                    key=state.genre_weights.get,
+                    default="?",  # type: ignore[arg-type]
+                )
+                logger.info(
+                    "DBG t=%.1f seg=%-10s e=%.2f de=%+.2f onset=%-5s "
+                    "drop=%.2f genre=%s | gen=%.1fms speed=%.2fx",
+                    state.timestamp,
+                    state.segment,
+                    state.energy,
+                    state.energy_derivative,
+                    state.onset_type or "\u2014",
+                    state.drop_probability,
+                    top_genre,
+                    gen_ms,
+                    ratio,
+                )
 
-                # Push to WebSocket server (drop if full)
-                with contextlib.suppress(asyncio.QueueFull):
-                    self._server.state_queue.put_nowait((state, commands))
+            # Push to WebSocket server (drop if full)
+            with contextlib.suppress(asyncio.QueueFull):
+                self._server.state_queue.put_nowait((state, commands))
 
-                # Optional UDP to physical fixtures
-                if self._udp_socket and self._udp_addr:
-                    seq = (seq + 1) & 0xFFFF
-                    ts_ms = int(state.timestamp * 1000) & 0xFFFF
-                    packet = encode_packet(commands, sequence=seq, timestamp_ms=ts_ms)
-                    self._udp_socket.sendto(packet, self._udp_addr)
+            # Optional UDP to physical fixtures
+            if self._udp_socket and self._udp_addr:
+                seq = (seq + 1) & 0xFFFF
+                ts_ms = int(state.timestamp * 1000) & 0xFFFF
+                packet = encode_packet(commands, sequence=seq, timestamp_ms=ts_ms)
+                self._udp_socket.sendto(packet, self._udp_addr)
 
-                self._frame_index += 1
+            self._frame_index += 1
 
-            elapsed = time.monotonic() - t_start
-            await asyncio.sleep(max(0.0, frame_interval - elapsed))
+            # Sleep until this frame's absolute target time
+            target = base_time + self._frame_index * frame_interval
+            sleep_for = target - time.monotonic()
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+            # else: behind schedule — skip sleep, catch up immediately
 
         logger.info("Playback complete")
 

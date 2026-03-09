@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 from typing import Any
@@ -191,9 +190,19 @@ class LuminaServer:
     # ── Broadcast loop ───────────────────────────────────────────
 
     async def _broadcast_loop(self) -> None:
-        """Read from state_queue and broadcast to all connected clients."""
+        """Read from state_queue and broadcast to all connected clients.
+
+        Serialization uses manual dict construction instead of
+        ``dataclasses.asdict()`` to avoid its per-field deep-copy overhead
+        at 60fps.  When no clients are connected the frame is discarded
+        without serialization.
+        """
         while True:
             music_state, commands = await self._state_queue.get()
+
+            if not self._clients:
+                continue  # nothing to send — skip serialization
+
             self._sequence = (self._sequence + 1) & 0xFFFF
 
             commands_msg = json.dumps(
@@ -201,7 +210,19 @@ class LuminaServer:
                     "type": "fixture_commands",
                     "sequence": self._sequence,
                     "timestamp_ms": int(music_state.timestamp * 1000) & 0xFFFF,
-                    "commands": [dataclasses.asdict(cmd) for cmd in commands],
+                    "commands": [
+                        {
+                            "fixture_id": c.fixture_id,
+                            "red": c.red,
+                            "green": c.green,
+                            "blue": c.blue,
+                            "white": c.white,
+                            "strobe_rate": c.strobe_rate,
+                            "strobe_intensity": c.strobe_intensity,
+                            "special": c.special,
+                        }
+                        for c in commands
+                    ],
                 },
                 cls=_NumpyEncoder,
             )
@@ -209,7 +230,23 @@ class LuminaServer:
             state_msg = json.dumps(
                 {
                     "type": "music_state",
-                    "state": dataclasses.asdict(music_state),
+                    "state": {
+                        "timestamp": music_state.timestamp,
+                        "bpm": music_state.bpm,
+                        "beat_phase": music_state.beat_phase,
+                        "bar_phase": music_state.bar_phase,
+                        "is_beat": music_state.is_beat,
+                        "is_downbeat": music_state.is_downbeat,
+                        "energy": music_state.energy,
+                        "energy_derivative": music_state.energy_derivative,
+                        "segment": music_state.segment,
+                        "genre_weights": dict(music_state.genre_weights),
+                        "vocal_energy": music_state.vocal_energy,
+                        "spectral_centroid": music_state.spectral_centroid,
+                        "sub_bass_energy": music_state.sub_bass_energy,
+                        "onset_type": music_state.onset_type,
+                        "drop_probability": music_state.drop_probability,
+                    },
                 },
                 cls=_NumpyEncoder,
             )
