@@ -62,6 +62,7 @@ class AppConfig:
     sr: int = 44100
     udp_target: str | None = None
     debug: bool = False
+    genre_override: str | None = None
 
 
 def _assemble_music_state(
@@ -224,10 +225,22 @@ class LuminaApp:
         )
         segment_results = structural_analyzer.map_to_frames(structural_map, n, fps)
 
+        # Log section distribution when debug is on
+        if self._config.debug:
+            dist: dict[str, int] = {}
+            for sec in structural_map.sections:
+                dist[sec.segment_type] = dist.get(sec.segment_type, 0) + 1
+            parts = ", ".join(
+                f"{count} {stype}" for stype, count in sorted(dist.items())
+            )
+            logger.info("Sections: %s", parts)
+
         # Genre classification (locked for entire track)
         drop_probs = [drop_results[i].drop_probability for i in range(n)]
         genre_results = genre_classifier.classify_file(
-            energies, centroids, basses, onset_bools, vocals, drop_probs
+            energies, centroids, basses, onset_bools, vocals, drop_probs,
+            stems=stems,
+            genre_override=self._config.genre_override,
         )
 
         # Assemble per-frame MusicState
@@ -315,6 +328,36 @@ class LuminaApp:
                     ratio,
                 )
 
+                # LIT line: lighting engine debug summary
+                di = self._engine.last_debug_info
+                patterns = di.get("patterns", [])
+                pattern_str = "+".join(patterns) if patterns else "—"
+                type_counts: dict[str, tuple[int, int]] = di.get("type_counts", {})  # type: ignore[assignment]
+                pars = type_counts.get("par", (0, 0))
+                strobes = type_counts.get("strobe", (0, 0))
+                bars = type_counts.get("led_bar", (0, 0))
+                laser = type_counts.get("laser", (0, 0))
+                laser_str = "ON" if laser[0] > 0 else "OFF"
+                colors: list[str] = di.get("colors", [])  # type: ignore[assignment]
+                color_str = "[" + ",".join(colors) + "]" if colors else "[]"
+                logger.info(
+                    "LIT t=%.1f profile=%s seg=%s pattern=%s "
+                    "active=%d/%d pars=%d/%d strobes=%d/%d bars=%d/%d laser=%s "
+                    "colors=%s strobe_rate=%d",
+                    state.timestamp,
+                    di.get("profile", "?"),
+                    di.get("segment", "?"),
+                    pattern_str,
+                    di.get("active", 0),
+                    di.get("total", 0),
+                    pars[0], pars[1],
+                    strobes[0], strobes[1],
+                    bars[0], bars[1],
+                    laser_str,
+                    color_str,
+                    di.get("strobe_rate_max", 0),
+                )
+
             # Push to WebSocket server (drop if full)
             with contextlib.suppress(asyncio.QueueFull):
                 self._server.state_queue.put_nowait((state, commands))
@@ -400,6 +443,11 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         action="store_true",
         help="Print MusicState once per second for pipeline debugging",
     )
+    parser.add_argument(
+        "--genre",
+        default=None,
+        help="Override genre classification with a fixed profile (e.g. rage_trap)",
+    )
     args = parser.parse_args(argv)
 
     return AppConfig(
@@ -411,6 +459,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         sr=args.sr,
         udp_target=args.udp_target,
         debug=args.debug,
+        genre_override=args.genre,
     )
 
 

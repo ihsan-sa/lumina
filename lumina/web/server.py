@@ -27,6 +27,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
+from lumina.lighting.fixture_map import FixtureMap
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class LuminaServer:
         self._broadcast_task: asyncio.Task[None] | None = None
         self._sequence = 0
         self._playback_info: dict[str, Any] | None = None
+        self._fixture_map = FixtureMap()
 
         self._app = Starlette(
             routes=[
@@ -152,6 +154,22 @@ class LuminaServer:
                 await self._broadcast_task
             self._broadcast_task = None
 
+    def _fixture_layout_msg(self) -> dict[str, Any]:
+        """Generate a fixture_layout message from the current fixture map."""
+        return {
+            "type": "fixture_layout",
+            "fixtures": [
+                {
+                    "fixture_id": f.fixture_id,
+                    "fixture_type": f.fixture_type.value,
+                    "position": list(f.position),
+                    "role": f.role.value,
+                    "name": f.name,
+                }
+                for f in self._fixture_map.all
+            ],
+        }
+
     # ── Endpoints ────────────────────────────────────────────────
 
     async def _ws_endpoint(self, websocket: WebSocket) -> None:
@@ -159,6 +177,10 @@ class LuminaServer:
         await websocket.accept()
         self._clients.add(websocket)
         logger.info("Client connected (%d total)", len(self._clients))
+
+        # Send fixture layout so the simulator knows fixture positions
+        with contextlib.suppress(Exception):
+            await websocket.send_text(json.dumps(self._fixture_layout_msg()))
 
         # Send playback info so the simulator can auto-start audio
         if self._playback_info is not None:

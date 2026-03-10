@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, FixtureCommand, MusicState, ServerMessage } from "../types/fixtures";
+import type { ClientMessage, FixtureCommand, FixtureConfig, MusicState, ServerMessage } from "../types/fixtures";
+import { backendFixtureToConfig, FALLBACK_FIXTURES } from "../types/fixtures";
 
 const WS_URL = `ws://${window.location.hostname}:8765/ws`;
 const RECONNECT_MIN_MS = 1000;
@@ -15,6 +16,7 @@ export interface WebSocketHandle {
   commandsRef: React.MutableRefObject<Map<number, FixtureCommand>>;
   musicStateRef: React.MutableRefObject<MusicState | null>;
   playbackInfoRef: React.MutableRefObject<PlaybackInfo | null>;
+  fixtures: FixtureConfig[];
   sendMessage: (msg: ClientMessage) => void;
 }
 
@@ -36,8 +38,12 @@ const DEFAULT_MUSIC_STATE: MusicState = {
   drop_probability: 0,
 };
 
+/** Fallback configs from the default 15-fixture layout. */
+const FALLBACK_CONFIGS: FixtureConfig[] = FALLBACK_FIXTURES.map(backendFixtureToConfig);
+
 export function useWebSocket(): WebSocketHandle {
   const [connected, setConnected] = useState(false);
+  const [fixtures, setFixtures] = useState<FixtureConfig[]>(FALLBACK_CONFIGS);
   const wsRef = useRef<WebSocket | null>(null);
   const commandsRef = useRef<Map<number, FixtureCommand>>(new Map());
   const musicStateRef = useRef<MusicState | null>(null);
@@ -83,6 +89,9 @@ export function useWebSocket(): WebSocketHandle {
             filename: msg.filename,
             duration: msg.duration,
           };
+        } else if (msg.type === "fixture_layout") {
+          const configs = msg.fixtures.map(backendFixtureToConfig);
+          setFixtures(configs);
         }
       } catch {
         // Ignore malformed messages
@@ -105,5 +114,5 @@ export function useWebSocket(): WebSocketHandle {
     }
   }, []);
 
-  return { connected, commandsRef, musicStateRef, playbackInfoRef, sendMessage };
+  return { connected, commandsRef, musicStateRef, playbackInfoRef, fixtures, sendMessage };
 }

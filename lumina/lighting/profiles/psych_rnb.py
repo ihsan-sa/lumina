@@ -104,6 +104,7 @@ class PsychRnbProfile(BaseProfile):
         Returns:
             One FixtureCommand per fixture (15 total).
         """
+        self._begin_debug_frame()
         segment = state.segment
 
         # Detect segment transitions for crossfade
@@ -113,14 +114,19 @@ class PsychRnbProfile(BaseProfile):
 
         # Generate commands for current segment
         if segment == "drop":
+            self._note_patterns("drop")
             current = self._drop(state)
         elif segment in ("breakdown", "bridge"):
+            self._note_patterns("breakdown")
             current = self._breakdown(state)
         elif segment in ("intro", "outro"):
+            self._note_patterns("intro_outro")
             current = self._intro_outro(state)
         elif segment == "chorus":
+            self._note_patterns("chorus")
             current = self._chorus(state)
         else:
+            self._note_patterns("verse")
             current = self._verse(state)
 
         # Apply crossfade if within transition window

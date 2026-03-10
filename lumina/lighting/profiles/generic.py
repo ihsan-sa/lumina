@@ -100,17 +100,22 @@ class GenericProfile(BaseProfile):
         Returns:
             One FixtureCommand per fixture (15 total).
         """
+        self._begin_debug_frame()
         segment = state.segment
 
         if segment in ("breakdown", "bridge"):
+            self._note_patterns("breathing")
             return self._breathing(state)
 
         if segment == "drop":
+            self._note_patterns("drop")
             return self._drop(state)
 
         if segment in ("intro", "outro"):
+            self._note_patterns("gentle")
             return self._gentle(state)
 
+        self._note_patterns("reactive")
         return self._reactive(state)
 
     # ─── Segment handlers ──────────────────────────────────────────

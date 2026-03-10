@@ -95,9 +95,27 @@ class TestDropExplosion:
             assert cmd_map[pid].red == 255
             assert cmd_map[pid].green == 0
 
-    def test_drop_between_beats_dark(self) -> None:
+    def test_drop_between_beats_dark_low_energy(self) -> None:
         p = _profile()
-        # beat_phase=0.7 puts us in the "off-beat" half (>= 0.5 = blackout)
+        # beat_phase=0.7, low energy → full blackout on pars
+        cmds = p.generate(
+            _state(
+                segment="drop",
+                energy=0.3,
+                is_beat=False,
+                is_downbeat=False,
+                beat_phase=0.7,
+            )
+        )
+        cmd_map = {c.fixture_id: c for c in cmds}
+        for pid in _par_ids():
+            assert cmd_map[pid].red == 0
+        for sid in _strobe_ids():
+            assert cmd_map[sid].strobe_rate == 0
+
+    def test_drop_between_beats_floor_high_energy(self) -> None:
+        p = _profile()
+        # beat_phase=0.7, high energy → pars hold dim red floor (not blackout)
         cmds = p.generate(
             _state(
                 segment="drop",
@@ -108,8 +126,8 @@ class TestDropExplosion:
             )
         )
         cmd_map = {c.fixture_id: c for c in cmds}
-        for pid in _par_ids():
-            assert cmd_map[pid].red == 0
+        any_lit = any(cmd_map[pid].red > 0 for pid in _par_ids())
+        assert any_lit, "Pars should hold a dim red floor at high energy between drop hits"
         for sid in _strobe_ids():
             assert cmd_map[sid].strobe_rate == 0
 

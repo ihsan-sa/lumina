@@ -272,6 +272,23 @@ class BaseProfile(ABC):
 
     def __init__(self, fixture_map: FixtureMap) -> None:
         self._map = fixture_map
+        self._debug_info: dict[str, object] = {}
+
+    # ─── Debug helpers ────────────────────────────────────────────
+
+    def _begin_debug_frame(self) -> None:
+        """Reset per-frame debug state.  Call at the top of generate()."""
+        self._debug_info = {"patterns": []}
+
+    def _note_patterns(self, *names: str) -> None:
+        """Record which pattern sub-method was dispatched to this frame.
+
+        Args:
+            *names: Pattern method name(s) being invoked.
+        """
+        patterns = self._debug_info.get("patterns")
+        if isinstance(patterns, list):
+            patterns.extend(names)
 
     @abstractmethod
     def generate(self, state: MusicState) -> list[FixtureCommand]:

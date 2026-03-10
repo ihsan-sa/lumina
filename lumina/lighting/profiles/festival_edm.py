@@ -105,6 +105,7 @@ class FestivalEdmProfile(BaseProfile):
         Returns:
             One FixtureCommand per fixture (15 total).
         """
+        self._begin_debug_frame()
         segment = state.segment
 
         if segment != self._last_segment:
@@ -122,20 +123,25 @@ class FestivalEdmProfile(BaseProfile):
                 if self._build_start_time < 0
                 else self._build_start_time
             )
+            self._note_patterns("build")
             return self._build(state)
 
         if state.drop_probability <= 0.4 and segment != "drop":
             self._build_start_time = -1.0
 
         if segment == "drop":
+            self._note_patterns("drop")
             return self._drop(state)
 
         if segment in ("breakdown", "bridge"):
+            self._note_patterns("breakdown")
             return self._breakdown(state)
 
         if segment in ("intro", "outro"):
+            self._note_patterns("intro_outro")
             return self._intro_outro(state)
 
+        self._note_patterns("groove")
         return self._groove(state)
 
     # ─── Segment handlers ──────────────────────────────────────────
