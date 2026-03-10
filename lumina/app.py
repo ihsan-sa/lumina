@@ -218,10 +218,30 @@ class LuminaApp:
             energies, derivs, centroids, basses, vocals, onset_bools
         )
 
+        # Genre classification — runs before structural analysis so family
+        # can be passed to the EDM structural pass
+        drop_probs = [drop_results[i].drop_probability for i in range(n)]
+        genre_results = genre_classifier.classify_file(
+            energies, centroids, basses, onset_bools, vocals, drop_probs,
+            stems=stems,
+            genre_override=self._config.genre_override,
+        )
+
+        # Determine top genre family and profile for structural analysis
+        first_genre = genre_results[0]
+        genre_family = first_genre.family
+        genre_profile = max(
+            first_genre.genre_weights, key=first_genre.genre_weights.__getitem__
+        )
+
         # Structural analysis (replaces SegmentClassifier in file mode)
-        logger.info("Running structural analysis...")
+        # Passes genre_family so electronic tracks use the EDM structural pass
+        logger.info("Running structural analysis (genre_family=%s)...", genre_family)
         structural_map = structural_analyzer.analyze(
-            audio, stems, beat_results, energy_results, onset_results, vocal_results
+            audio, stems, beat_results, energy_results, onset_results, vocal_results,
+            genre_family=genre_family,
+            genre_profile=genre_profile,
+            drop_results=drop_results,
         )
         segment_results = structural_analyzer.map_to_frames(structural_map, n, fps)
 
@@ -234,14 +254,6 @@ class LuminaApp:
                 f"{count} {stype}" for stype, count in sorted(dist.items())
             )
             logger.info("Sections: %s", parts)
-
-        # Genre classification (locked for entire track)
-        drop_probs = [drop_results[i].drop_probability for i in range(n)]
-        genre_results = genre_classifier.classify_file(
-            energies, centroids, basses, onset_bools, vocals, drop_probs,
-            stems=stems,
-            genre_override=self._config.genre_override,
-        )
 
         # Assemble per-frame MusicState
         frame_interval = 1.0 / fps

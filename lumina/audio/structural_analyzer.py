@@ -26,6 +26,8 @@ from lumina.audio.onset_detector import OnsetEvent
 from lumina.audio.segment_classifier import SegmentFrame
 from lumina.audio.source_separator import StemSet
 from lumina.audio.vocal_detector import VocalFrame
+from lumina.audio.drop_predictor import DropFrame
+from lumina.analysis.edm_structure import StructuralSegment, edm_structure_pass
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,9 @@ class StructuralAnalyzer:
         energy_results: list[EnergyFrame],
         onset_results: list[OnsetEvent | None],
         vocal_results: list[VocalFrame],
+        genre_family: str = "",
+        genre_profile: str = "",
+        drop_results: list[DropFrame] | None = None,
     ) -> StructuralMap:
         """Analyze song structure from audio and pre-computed features.
 
@@ -100,6 +105,12 @@ class StructuralAnalyzer:
             energy_results: Energy analysis frames.
             onset_results: Onset detection frames.
             vocal_results: Vocal detection frames.
+            genre_family: Top-level genre family from classifier
+                ("electronic", "hiphop_rap", "hybrid", or "").
+            genre_profile: Top profile name for subgenre tuning
+                (e.g. "festival_edm", "uk_bass").
+            drop_results: Per-frame drop prediction frames (optional).
+                Used to improve drop-point detection in the EDM pass.
 
         Returns:
             StructuralMap with labeled sections.
@@ -126,6 +137,20 @@ class StructuralAnalyzer:
                 ],
                 duration=duration,
             )
+
+        # EDM-specific structural pass — replaces default labels for electronic tracks
+        if genre_family in ("electronic", "hybrid"):
+            edm_map = self._run_edm_pass(
+                genre_family=genre_family,
+                genre_profile=genre_profile,
+                beat_results=beat_results,
+                energy_results=energy_results,
+                drop_results=drop_results,
+                n_frames=n_frames,
+                duration=duration,
+            )
+            if edm_map is not None:
+                return edm_map
 
         # Step 1: Self-similarity matrix from MFCCs
         boundaries = self._detect_boundaries(audio, duration)
@@ -586,6 +611,139 @@ class StructuralAnalyzer:
                 merged.append(sec)
 
         return merged
+
+    # ── EDM structural pass ───────────────────────────────────────
+
+    def _run_edm_pass(
+        self,
+        genre_family: str,
+        genre_profile: str,
+        beat_results: list[BeatInfo],
+        energy_results: list[EnergyFrame],
+        drop_results: list[DropFrame] | None,
+        n_frames: int,
+        duration: float,
+    ) -> StructuralMap | None:
+        """Run the EDM-specific structural analysis pass.
+
+        Extracts bar/beat times and energy envelope from pre-computed frame
+        data, calls edm_structure_pass(), then converts the result into a
+        StructuralMap of Section objects.
+
+        Args:
+            genre_family: "electronic" or "hybrid".
+            genre_profile: Subgenre profile name for threshold tuning.
+            beat_results: Per-frame beat tracking data.
+            energy_results: Per-frame energy data.
+            drop_results: Per-frame drop prediction data, or None.
+            n_frames: Number of valid frames (min of all result lengths).
+            duration: Song duration in seconds.
+
+        Returns:
+            StructuralMap if the EDM pass succeeds, None to fall back to
+            the default self-similarity analyzer.
+        """
+        frame_interval = 1.0 / self._fps
+
+        # Build energy envelope from frame-level energy values
+        energy_envelope = np.array(
+            [energy_results[i].energy for i in range(n_frames)],
+            dtype=np.float32,
+        )
+
+        # Extract bar (downbeat) timestamps — append duration as final boundary
+        bar_times: list[float] = [
+            i * frame_interval
+            for i in range(n_frames)
+            if beat_results[i].is_downbeat
+        ]
+        if not bar_times or bar_times[0] > frame_interval * 2:
+            bar_times.insert(0, 0.0)
+        bar_times.append(duration)
+        bar_times_arr = np.array(bar_times)
+
+        # Extract beat timestamps
+        beat_times_arr = np.array(
+            [i * frame_interval for i in range(n_frames) if beat_results[i].is_beat],
+            dtype=np.float64,
+        )
+
+        if len(bar_times_arr) < 4:
+            logger.warning("EDM pass skipped: too few bars detected (%d)", len(bar_times_arr))
+            return None
+
+        # Compute per-bar drop probability (mean frame values within each bar)
+        bar_drop_prob: np.ndarray | None = None
+        if drop_results is not None:
+            n_bars = len(bar_times_arr) - 1
+            bar_drop_prob = np.zeros(n_bars)
+            for b in range(n_bars):
+                t_start = bar_times_arr[b]
+                t_end = bar_times_arr[b + 1]
+                f_start = max(0, int(t_start * self._fps))
+                f_end = min(n_frames, int(t_end * self._fps))
+                if f_end > f_start:
+                    bar_drop_prob[b] = float(
+                        np.mean([drop_results[f].drop_probability for f in range(f_start, f_end)])
+                    )
+
+        # Run EDM structural analysis
+        edm_segments = edm_structure_pass(
+            energy_envelope=energy_envelope,
+            beat_times=beat_times_arr,
+            bar_times=bar_times_arr,
+            sr=self._sr,
+            hop_length=self._hop_length,
+            genre_family=genre_family,
+            genre_profile=genre_profile,
+            drop_probability=bar_drop_prob,
+        )
+
+        if not edm_segments:
+            return None
+
+        # Convert StructuralSegment list → Section list
+        sections = [
+            Section(
+                start_time=seg.start_time,
+                end_time=seg.end_time,
+                segment_type=seg.label,
+                confidence=seg.confidence,
+                features={
+                    "mean_energy": seg.energy_mean,
+                    "energy_slope": seg.energy_slope,
+                },
+            )
+            for seg in edm_segments
+        ]
+
+        # Ensure last section reaches the end of the track
+        if sections and sections[-1].end_time < duration - 0.1:
+            last = sections[-1]
+            sections[-1] = Section(
+                start_time=last.start_time,
+                end_time=duration,
+                segment_type=last.segment_type,
+                confidence=last.confidence,
+                features=last.features,
+            )
+
+        logger.info(
+            "EDM structural pass: %d sections (family=%s profile=%s)",
+            len(sections),
+            genre_family,
+            genre_profile,
+        )
+        for sec in sections:
+            logger.info(
+                "  [%.1f - %.1f] %s (conf=%.2f)",
+                sec.start_time,
+                sec.end_time,
+                sec.segment_type,
+                sec.confidence,
+            )
+
+        return StructuralMap(sections=sections, duration=duration)
 
     # ── Helpers ────────────────────────────────────────────────────
 
