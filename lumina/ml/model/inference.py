@@ -69,11 +69,6 @@ def _extract_features(state: MusicState) -> list[float]:
         state.energy_derivative,
         # Normalize BPM to 0-1 (same as dataset normalization).
         max(0.0, min(1.0, (state.bpm - 60.0) / 140.0)),
-        float(state.layer_count),
-        float(state.notes_per_beat),
-        state.note_pattern_phase,
-        state.headroom,
-        float(state.motif_repetition),
     ]
 
 

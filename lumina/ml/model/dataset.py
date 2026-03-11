@@ -45,11 +45,6 @@ MUSIC_FEATURE_COLS: list[str] = [
     "is_downbeat",
     "energy_derivative",
     "bpm",
-    "layer_count",
-    "notes_per_beat",
-    "note_pattern_phase",
-    "headroom",
-    "motif_repetition",
 ]
 
 # Lighting target columns (color head targets).

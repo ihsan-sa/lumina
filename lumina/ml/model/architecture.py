@@ -4,10 +4,9 @@ Architecture: Genre-conditioned sequence-to-sequence model that maps
 MusicState features to high-level LightingIntent predictions.
 
 Input (per timestep):
-  - MusicState features (~20 floats): energy, beat_phase, bar_phase,
+  - MusicState features (11 floats): energy, beat_phase, bar_phase,
     spectral_centroid, sub_bass, vocal_energy, drop_probability, is_beat,
-    is_downbeat, energy_derivative, bpm, layer_count, notes_per_beat,
-    note_pattern_phase, headroom, motif_repetition
+    is_downbeat, energy_derivative, bpm
   - Genre embedding (8-dim): learned embedding from genre_profile label
   - Segment embedding (8-dim): learned embedding from segment label
   - Positional encoding: bar_phase and beat_phase (already in features)
@@ -42,7 +41,10 @@ CONTEXT_WINDOW = 40  # 4 seconds at 10fps
 ANALYSIS_FPS = 10  # Video/training frame rate
 
 # Number of raw MusicState float features extracted per frame.
-NUM_MUSIC_FEATURES = 16
+# Core features only — advanced fields (layer_count, notes_per_beat,
+# note_pattern_phase, headroom, motif_repetition) are excluded until
+# the corresponding analyzers are implemented.
+NUM_MUSIC_FEATURES = 11
 
 # Genre profiles known to the system.
 GENRE_LABELS: list[str] = [
