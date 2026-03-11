@@ -8,10 +8,12 @@ Patterns are pure functions with no shared state.  They are composable:
 profiles layer multiple patterns by merging their output dicts (later
 dicts override earlier ones for the same fixture ID).
 
-All 12 patterns:
+All 20 patterns:
     chase_lr, chase_bounce, converge, diverge, alternate,
     random_scatter, breathe, strobe_burst, wash_hold,
-    color_split, spotlight_isolate, stutter
+    color_split, spotlight_isolate, stutter,
+    chase_mirror, strobe_chase, lightning_flash, color_pop,
+    rainbow_roll, flicker, gradient_y, blinder
 """
 
 from __future__ import annotations
@@ -629,3 +631,398 @@ def stutter(
         else:
             result[f.fixture_id] = make_command(f, BLACK, 0.0)
     return result
+
+
+# ─── New pattern functions ─────────────────────────────────────────
+
+
+def chase_mirror(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    speed: float = 1.0,
+    width: float = 0.3,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Symmetric L-R chase: left wall sweeps L→R, right wall sweeps R→L.
+
+    Fixtures are split at the room center x. Each half gets a chase
+    moving in opposite directions, creating a symmetric converge/diverge
+    visual.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Chase color.
+        speed: Cycles per bar.
+        width: Width of the bright spot.
+        intensity: Peak brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    mid_x = ROOM_WIDTH / 2
+    left = sorted([f for f in fixtures if f.position[0] < mid_x],
+                   key=lambda f: f.position[1])
+    right = sorted([f for f in fixtures if f.position[0] >= mid_x],
+                    key=lambda f: f.position[1])
+
+    phase = (state.bar_phase * speed) % 1.0
+    result: dict[int, FixtureCommand] = {}
+
+    for group, p in [(left, phase), (right, 1.0 - phase)]:
+        n = len(group)
+        for i, f in enumerate(group):
+            pos = i / max(n - 1, 1)
+            dist = abs(pos - (p % 1.0))
+            dist = min(dist, 1.0 - dist)
+            brightness = max(0.0, 1.0 - dist / max(width, 0.01)) * intensity
+            result[f.fixture_id] = make_command(f, color, brightness)
+
+    return result
+
+
+def strobe_chase(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    speed: float = 1.0,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Sequential strobe rotation: one fixture at a time, cycling.
+
+    Only the active fixture fires; all others are off. Creates a
+    rotating strobe effect around the room.
+
+    Args:
+        fixtures: Target fixtures (typically corner strobes).
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Strobe tint color.
+        speed: Cycles per bar.
+        intensity: Strobe brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    n = len(fixtures)
+    active_idx = int((state.bar_phase * speed * n) % n)
+
+    from lumina.lighting.fixture_map import FixtureType
+
+    result: dict[int, FixtureCommand] = {}
+    for i, f in enumerate(fixtures):
+        if i == active_idx:
+            if f.fixture_type == FixtureType.STROBE:
+                result[f.fixture_id] = make_command(
+                    f, color, intensity=intensity,
+                    strobe_rate=220, strobe_intensity=int(intensity * 255),
+                )
+            else:
+                result[f.fixture_id] = make_command(f, color, intensity)
+        else:
+            result[f.fixture_id] = make_command(f, BLACK, 0.0)
+    return result
+
+
+def lightning_flash(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    flash_duration: float = 0.15,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Multi-flash with exponential aftershock decay.
+
+    Flash → 60% → 30% → 0 over flash_duration seconds.
+    Uses timestamp modulo to create repeating lightning effect.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Flash color.
+        flash_duration: Total duration of the flash sequence.
+        intensity: Peak flash brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    # Phase within the flash sequence (repeats on each beat)
+    phase_in_beat = state.beat_phase
+    # Lightning fires in the first portion of each beat
+    t = phase_in_beat * (60.0 / max(state.bpm, 60.0))
+
+    if t < flash_duration * 0.3:
+        level = intensity  # main flash
+    elif t < flash_duration * 0.6:
+        level = intensity * 0.6  # aftershock 1
+    elif t < flash_duration:
+        level = intensity * 0.3  # aftershock 2
+    else:
+        level = 0.0
+
+    result: dict[int, FixtureCommand] = {}
+    for f in fixtures:
+        result[f.fixture_id] = make_command(f, color, level)
+    return result
+
+
+def color_pop(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Complementary color flash against wash on beats.
+
+    On beats, fixtures flash with the complement of the base color.
+    Off-beat, they hold the base color at reduced intensity.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Base wash color (complement is computed automatically).
+        intensity: Peak brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    # Compute complement by swapping R↔B channels
+    complement = Color(
+        r=1.0 - color.r,
+        g=1.0 - color.g,
+        b=1.0 - color.b,
+        w=color.w,
+    )
+
+    result: dict[int, FixtureCommand] = {}
+    if state.is_beat:
+        for f in fixtures:
+            result[f.fixture_id] = make_command(f, complement, intensity)
+    else:
+        for f in fixtures:
+            result[f.fixture_id] = make_command(f, color, intensity * 0.4)
+    return result
+
+
+def rainbow_roll(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    speed: float = 1.0,
+    hue_min: float = 0.0,
+    hue_max: float = 1.0,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Each fixture gets a different hue, rotating continuously.
+
+    Hue offsets are evenly distributed across fixtures. The entire
+    rainbow rotates over time at ``speed`` cycles per bar.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Ignored (hues are generated). Included for signature compat.
+        speed: Rotation speed in cycles per bar.
+        hue_min: Minimum hue in the range (0.0-1.0).
+        hue_max: Maximum hue in the range (0.0-1.0).
+        intensity: Master brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    import colorsys
+
+    n = len(fixtures)
+    base_hue = (state.bar_phase * speed) % 1.0
+    hue_range = hue_max - hue_min
+
+    result: dict[int, FixtureCommand] = {}
+    for i, f in enumerate(fixtures):
+        hue = hue_min + ((base_hue + i / n) % 1.0) * hue_range
+        r, g, b = colorsys.hsv_to_rgb(hue % 1.0, 1.0, 1.0)
+        c = Color(r=r, g=g, b=b, w=0.0)
+        result[f.fixture_id] = make_command(f, c, intensity)
+    return result
+
+
+def flicker(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    intensity: float = 0.5,
+    jitter: float = 0.4,
+) -> dict[int, FixtureCommand]:
+    """Deterministic random intensity jitter per fixture (fire/underground).
+
+    Each fixture gets a different pseudo-random intensity based on
+    timestamp + fixture_id, creating an organic flickering effect.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Flicker color.
+        intensity: Base intensity.
+        jitter: Amount of random variation (0.0-1.0).
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    # Quantize to ~30ms for natural flicker rate
+    t_quant = int(timestamp * 33)
+
+    result: dict[int, FixtureCommand] = {}
+    for f in fixtures:
+        seed = f"{t_quant}_{f.fixture_id}".encode()
+        h = int(hashlib.md5(seed).hexdigest()[:8], 16)  # noqa: S324
+        rand_val = (h & 0xFFFF) / 0xFFFF  # 0.0-1.0
+        level = max(0.0, min(1.0, intensity + (rand_val - 0.5) * jitter * 2))
+        result[f.fixture_id] = make_command(f, color, level)
+    return result
+
+
+def gradient_y(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    color_back: Color | None = None,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """Front-to-back color gradient using fixture y-position.
+
+    Front fixtures get ``color``, back fixtures get ``color_back``.
+    Intermediate fixtures are linearly interpolated.
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Front color.
+        color_back: Back color. If None, uses a dimmed version of front.
+        intensity: Master brightness.
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    from lumina.lighting.profiles.base import lerp_color
+
+    if color_back is None:
+        color_back = color.scaled(0.3)
+
+    result: dict[int, FixtureCommand] = {}
+    for f in fixtures:
+        t = f.position[1] / ROOM_DEPTH  # 0=front, 1=back
+        blended = lerp_color(color, color_back, t)
+        result[f.fixture_id] = make_command(f, blended, intensity)
+    return result
+
+
+def blinder(
+    fixtures: list[FixtureInfo],
+    state: MusicState,
+    timestamp: float,
+    color: Color,
+    *,
+    intensity: float = 1.0,
+) -> dict[int, FixtureCommand]:
+    """All fixtures max white + max strobe — audience blinder.
+
+    The nuclear option. Every fixture fires at maximum output.
+    Use extremely sparingly (first beat of a drop, climax moments).
+
+    Args:
+        fixtures: Target fixtures.
+        state: Current music state.
+        timestamp: Current timestamp.
+        color: Ignored (always white). Included for signature compat.
+        intensity: Master intensity (typically 1.0).
+
+    Returns:
+        Dict of fixture_id -> FixtureCommand.
+    """
+    if not fixtures:
+        return {}
+
+    from lumina.lighting.fixture_map import FixtureType
+    from lumina.lighting.profiles.base import WHITE
+
+    result: dict[int, FixtureCommand] = {}
+    for f in fixtures:
+        if f.fixture_type == FixtureType.STROBE:
+            result[f.fixture_id] = make_command(
+                f, WHITE, intensity=intensity,
+                strobe_rate=255, strobe_intensity=255,
+            )
+        else:
+            result[f.fixture_id] = make_command(f, WHITE, intensity=intensity)
+    return result
+
+
+# ─── Pattern registry ──────────────────────────────────────────────
+
+from typing import Callable, Any  # noqa: E402
+
+PatternFn = Callable[..., dict[int, "FixtureCommand"]]
+
+PATTERN_REGISTRY: dict[str, PatternFn] = {
+    "chase_lr": chase_lr,
+    "chase_bounce": chase_bounce,
+    "converge": converge,
+    "diverge": diverge,
+    "alternate": alternate,
+    "random_scatter": random_scatter,
+    "breathe": breathe,
+    "strobe_burst": strobe_burst,
+    "wash_hold": wash_hold,
+    "color_split": color_split,
+    "spotlight_isolate": spotlight_isolate,
+    "stutter": stutter,
+    "chase_mirror": chase_mirror,
+    "strobe_chase": strobe_chase,
+    "lightning_flash": lightning_flash,
+    "color_pop": color_pop,
+    "rainbow_roll": rainbow_roll,
+    "flicker": flicker,
+    "gradient_y": gradient_y,
+    "blinder": blinder,
+}

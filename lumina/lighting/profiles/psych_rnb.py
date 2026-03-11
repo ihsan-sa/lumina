@@ -36,6 +36,7 @@ from lumina.lighting.patterns import (
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
+    BumpTracker,
     Color,
     energy_brightness,
     lerp_color,
@@ -89,6 +90,9 @@ class PsychRnbProfile(BaseProfile):
         self._led_bars = self._map.by_type(FixtureType.LED_BAR)
         self._lasers = self._map.by_type(FixtureType.LASER)
         self._pars_lr = self._map.sorted_by_x(self._pars)
+
+        # Override bump tracker: 300ms smooth decay (psych is flowing)
+        self._bump = BumpTracker(decay_rate=3.5)
 
         # Crossfade state
         self._last_segment: str = ""
@@ -147,6 +151,8 @@ class PsychRnbProfile(BaseProfile):
         """Verse: breathe with per-fixture phase offset for out-of-phase drift.
 
         Intensity tied to vocal energy. Color drifts through purple/cyan palette.
+        Kick onsets smoothly bump par intensity via BumpTracker.
+        Sub-bass deepens purple, spectral centroid shifts color temperature.
         """
         commands: dict[int, FixtureCommand] = {}
 
@@ -155,24 +161,45 @@ class PsychRnbProfile(BaseProfile):
         eb = energy_brightness(state.energy)
         base_intensity = _VERSE_MIN + max(vocal, eb) * (_VERSE_MAX - _VERSE_MIN)
 
+        # Kick bump: trigger before swell check so decay is always active
+        if state.onset_type == "kick":
+            self._bump.trigger("pars", state.timestamp)
+        base_intensity = max(
+            base_intensity,
+            self._bump.get_intensity(
+                "pars", state.timestamp,
+                peak=_VERSE_MAX + 0.15, floor=base_intensity,
+            ),
+        )
+
         # Fixture escalation
         active_pars = select_active_fixtures(
             self._pars, state.energy,
             low_count=3, mid_count=6, mid_threshold=0.4,
         )
 
+        # Color: spectral centroid shifts temperature between purple and cyan
+        color = self._color_temperature(
+            state.spectral_centroid, DEEP_PURPLE, NEON_CYAN,
+        )
+        # Blend with the drifting wash palette for variety
+        wash = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
+        color = lerp_color(wash, color, 0.4)
+
+        # Sub-bass deepens purple
+        if state.sub_bass_energy > 0.3:
+            color = lerp_color(color, DEEP_PURPLE, state.sub_bass_energy * 0.5)
+
         # Swell: if energy is rising, use diverge
         if state.energy_derivative > 0.05:
             swell_boost = min(0.15, state.energy_derivative * 0.5)
             swell_intensity = min(0.75, base_intensity + swell_boost)
-            color = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
             par_cmds = diverge(
                 active_pars, state, state.timestamp, color, intensity=swell_intensity,
             )
             commands.update(par_cmds)
         else:
             # Per-fixture breathing with phase offset for drift
-            color = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
             par_cmds = breathe(
                 active_pars, state, state.timestamp, color,
                 min_intensity=base_intensity * 0.6,
@@ -192,9 +219,11 @@ class PsychRnbProfile(BaseProfile):
             commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         # LED bars: follow par wash at 50%
-        color = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
+        bar_color = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
+        if state.sub_bass_energy > 0.3:
+            bar_color = lerp_color(bar_color, DEEP_PURPLE, state.sub_bass_energy * 0.5)
         bar_cmds = wash_hold(
-            self._led_bars, state, state.timestamp, color,
+            self._led_bars, state, state.timestamp, bar_color,
             intensity=base_intensity * 0.5,
         )
         commands.update(bar_cmds)
@@ -209,6 +238,8 @@ class PsychRnbProfile(BaseProfile):
         """Chorus: color_split (magenta/cyan) + alternate on kicks.
 
         Warmer palette with gentle kick pulse layered on top.
+        Kick boost uses BumpTracker for smooth decay instead of binary pulse.
+        Sub-bass deepens purple tones.
         """
         commands: dict[int, FixtureCommand] = {}
 
@@ -216,12 +247,13 @@ class PsychRnbProfile(BaseProfile):
         eb = energy_brightness(state.energy)
         base_intensity = max(0.50, _VERSE_MIN + max(vocal, eb) * (_VERSE_MAX - _VERSE_MIN) + 0.15)
 
-        # Kick pulse
-        kick_boost = 0.0
+        # Kick bump: smooth decay instead of binary pulse
         if state.onset_type == "kick":
-            kick_boost = _CHORUS_KICK_PULSE
-        elif state.is_beat:
-            kick_boost = _CHORUS_KICK_PULSE * 0.5
+            self._bump.trigger("pars", state.timestamp)
+        kick_boost = self._bump.get_intensity(
+            "pars", state.timestamp,
+            peak=_CHORUS_KICK_PULSE, floor=0.0,
+        )
 
         # Fixture escalation
         active_pars = select_active_fixtures(
@@ -229,10 +261,18 @@ class PsychRnbProfile(BaseProfile):
             low_count=4, mid_count=6, high_threshold=0.7,
         )
 
+        # Sub-bass deepens the split colors toward purple
+        left_color = HOT_MAGENTA
+        right_color = NEON_CYAN
+        if state.sub_bass_energy > 0.3:
+            sub_blend = state.sub_bass_energy * 0.5
+            left_color = lerp_color(HOT_MAGENTA, DEEP_PURPLE, sub_blend)
+            right_color = lerp_color(NEON_CYAN, DEEP_PURPLE, sub_blend)
+
         # Color split: magenta left, cyan right
         split_cmds = color_split(
-            active_pars, state, state.timestamp, HOT_MAGENTA,
-            color_right=NEON_CYAN, intensity=min(1.0, base_intensity + kick_boost),
+            active_pars, state, state.timestamp, left_color,
+            color_right=right_color, intensity=min(1.0, base_intensity + kick_boost),
         )
         commands.update(split_cmds)
 

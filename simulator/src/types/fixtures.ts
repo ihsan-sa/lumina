@@ -116,6 +116,8 @@ export type ServerMessage =
       type: "playback_start";
       filename: string;
       duration: number;
+      audio_url?: string;
+      start_timestamp?: number;
     }
   | {
       type: "fixture_layout";
@@ -144,4 +146,8 @@ export type ClientMessage =
   | {
       type: "manual_effect";
       effect: "blackout" | "strobe_burst" | "uv_flash";
+    }
+  | {
+      type: "pattern_override";
+      pattern: string | null;
     };

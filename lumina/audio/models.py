@@ -33,6 +33,13 @@ class MusicState:
         sub_bass_energy: Sub-bass (20-80Hz) energy level.
         onset_type: Detected transient type, or None.
         drop_probability: 0.0-1.0 probability of drop in next 1-4 bars.
+        layer_count: Number of active stems (0-4).
+        layer_mask: Per-stem activity level (0.0-1.0).
+        motif_id: Which macro motif is playing (None if none).
+        motif_repetition: How many times this motif has been heard.
+        notes_per_beat: Regular notes per beat (0 = no pattern).
+        note_pattern_phase: Position in note cycle (0.0-1.0).
+        headroom: Intensity budget for this moment (0.0-1.0).
     """
 
     timestamp: float = 0.0
@@ -50,3 +57,18 @@ class MusicState:
     sub_bass_energy: float = 0.0
     onset_type: str | None = None
     drop_probability: float = 0.0
+
+    # Layer tracking
+    layer_count: int = 0
+    layer_mask: dict[str, float] = field(default_factory=dict)
+
+    # Bar-level motifs
+    motif_id: int | None = None
+    motif_repetition: int = 0
+
+    # Note-level patterns
+    notes_per_beat: int = 0
+    note_pattern_phase: float = 0.0
+
+    # Arc / headroom
+    headroom: float = 1.0

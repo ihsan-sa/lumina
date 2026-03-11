@@ -82,6 +82,60 @@ WHITE = Color(1.0, 1.0, 1.0, 1.0)
 RED = Color(1.0, 0.0, 0.0, 0.0)
 
 
+# ─── BumpTracker ──────────────────────────────────────────────────
+
+
+class BumpTracker:
+    """Stateful onset decay tracker for professional-grade hit responses.
+
+    Instead of binary 1-frame flash → instant dark, BumpTracker provides
+    exponential decay after each trigger.  Each "group" (e.g. "pars",
+    "strobes", "bars") tracks its own last-trigger time independently.
+
+    Args:
+        decay_rate: Decay speed.  Higher = faster fade.
+            10.0 ≈ 100ms half-life, 20.0 ≈ 50ms, 3.5 ≈ 300ms.
+    """
+
+    def __init__(self, decay_rate: float = 10.0) -> None:
+        self._onsets: dict[str, float] = {}
+        self._decay_rate = decay_rate
+
+    def trigger(self, group: str, timestamp: float) -> None:
+        """Record an onset trigger for a group.
+
+        Args:
+            group: Named group (e.g. "pars", "strobes", "bars").
+            timestamp: Current time in seconds.
+        """
+        self._onsets[group] = timestamp
+
+    def get_intensity(
+        self,
+        group: str,
+        timestamp: float,
+        peak: float = 1.0,
+        floor: float = 0.0,
+    ) -> float:
+        """Get current decay intensity for a group.
+
+        Returns exponential decay from peak to floor since last trigger.
+
+        Args:
+            group: Named group to query.
+            timestamp: Current time in seconds.
+            peak: Intensity at moment of trigger.
+            floor: Resting intensity after full decay.
+
+        Returns:
+            Current intensity between floor and peak.
+        """
+        if group not in self._onsets:
+            return floor
+        dt = max(0.0, timestamp - self._onsets[group])
+        return floor + (peak - floor) * math.exp(-self._decay_rate * dt)
+
+
 def color_from_hsv(h: float, s: float, v: float) -> Color:
     """Create a Color from HSV values (all 0.0-1.0).
 
@@ -273,6 +327,7 @@ class BaseProfile(ABC):
     def __init__(self, fixture_map: FixtureMap) -> None:
         self._map = fixture_map
         self._debug_info: dict[str, object] = {}
+        self._bump = BumpTracker(decay_rate=10.0)
 
     # ─── Debug helpers ────────────────────────────────────────────
 
@@ -602,3 +657,147 @@ class BaseProfile(ABC):
         if state.is_beat:
             return int(max_rate * 0.7), int(max_intensity * 0.8)
         return 0, 0
+
+    # ─── Color helpers ──────────────────────────────────────────
+
+    @staticmethod
+    def _color_temperature(
+        centroid: float, warm: Color, cool: Color
+    ) -> Color:
+        """Lerp between warm and cool color based on spectral centroid.
+
+        Maps centroid range ~1000-8000 Hz to 0.0-1.0 blend factor.
+        Low centroid (dark/bassy) → warm, high centroid (bright) → cool.
+
+        Args:
+            centroid: Spectral centroid value (typically 1000-8000).
+            warm: Color for low centroid.
+            cool: Color for high centroid.
+
+        Returns:
+            Blended Color.
+        """
+        t = max(0.0, min(1.0, (centroid - 1000.0) / 7000.0))
+        return lerp_color(warm, cool, t)
+
+    @staticmethod
+    def _bass_saturate(
+        sub_bass: float, color: Color, boost: float = 0.3
+    ) -> Color:
+        """Increase color saturation proportional to sub-bass energy.
+
+        Pushes the dominant channel higher while suppressing others,
+        deepening the color when sub-bass is present.
+
+        Args:
+            sub_bass: Sub-bass energy 0.0-1.0.
+            color: Base color to saturate.
+            boost: Maximum saturation boost factor.
+
+        Returns:
+            Saturated Color.
+        """
+        factor = 1.0 + sub_bass * boost
+        max_ch = max(color.r, color.g, color.b, 0.001)
+        return Color(
+            r=min(1.0, color.r * (factor if color.r >= max_ch * 0.8 else 1.0)),
+            g=min(1.0, color.g * (factor if color.g >= max_ch * 0.8 else 1.0)),
+            b=min(1.0, color.b * (factor if color.b >= max_ch * 0.8 else 1.0)),
+            w=color.w,
+        )
+
+    # ─── Layer / motif / headroom hooks ───────────────────────────
+
+    @property
+    def motif_pattern_preferences(self) -> list[str]:
+        """Ordered list of pattern names preferred for motif assignment.
+
+        Profiles override this to define their visual vocabulary for
+        repeating motifs. Motifs are assigned round-robin from this list.
+
+        Returns:
+            List of pattern names (e.g. ["chase_lr", "alternate", "converge"]).
+        """
+        return ["chase_lr", "alternate", "breathe", "converge"]
+
+    @property
+    def motif_color_palette(self) -> list[Color]:
+        """Color cycle for motif visual assignment.
+
+        Returns:
+            List of Colors to cycle through for motif assignment.
+        """
+        return [
+            Color(1.0, 0.0, 0.0),
+            Color(0.0, 0.0, 1.0),
+            Color(1.0, 0.5, 0.0),
+            Color(0.0, 1.0, 0.5),
+        ]
+
+    def _layer_fixture_count(
+        self, layer_count: int, energy: float, total_fixtures: int = 0
+    ) -> int:
+        """Map layer count to number of active fixtures.
+
+        More active stems = more fixtures lit. Energy provides a secondary
+        boost within each layer tier.
+
+        Args:
+            layer_count: Number of active stems (0-4).
+            energy: Current energy level (0.0-1.0).
+            total_fixtures: Total available fixtures (0 = use all pars).
+
+        Returns:
+            Number of fixtures to light.
+        """
+        if total_fixtures <= 0:
+            total_fixtures = len(self._map.by_type(FixtureType.PAR))
+
+        if total_fixtures == 0:
+            return 0
+
+        # Base count from layers: 1 stem = ~25%, 4 stems = 100%
+        base_frac = min(1.0, max(0.15, layer_count / 4.0))
+        # Energy boost: within the layer tier, energy scales up
+        energy_boost = energy * 0.15
+        frac = min(1.0, base_frac + energy_boost)
+
+        return max(1, int(frac * total_fixtures))
+
+    def _apply_note_pattern(
+        self,
+        state: MusicState,
+        fixtures: list[FixtureInfo],
+        color: Color,
+    ) -> dict[int, FixtureCommand] | None:
+        """Apply note-level pattern: cycle through fixtures per note.
+
+        When notes_per_beat > 0, assigns each note position to a different
+        fixture, cycling through the fixture list. The note_pattern_phase
+        determines which fixture is currently "active" (bright).
+
+        Args:
+            state: Current music state with note pattern info.
+            fixtures: Fixtures to cycle through.
+            color: Color for the active fixture.
+
+        Returns:
+            Command dict if pattern applied, None if no note pattern.
+        """
+        if state.notes_per_beat <= 0 or not fixtures:
+            return None
+
+        n = len(fixtures)
+        # Which fixture slot is active based on note phase
+        active_slot = int(state.note_pattern_phase * min(state.notes_per_beat, n)) % n
+
+        result: dict[int, FixtureCommand] = {}
+        for i, f in enumerate(fixtures):
+            if i == active_slot:
+                result[f.fixture_id] = self._cmd(f, color, intensity=state.headroom)
+            else:
+                # Dim others slightly for context
+                result[f.fixture_id] = self._cmd(
+                    f, color, intensity=state.headroom * 0.08
+                )
+        return result

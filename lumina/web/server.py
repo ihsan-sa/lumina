@@ -20,8 +20,10 @@ from typing import Any
 
 import numpy as np
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -68,12 +70,23 @@ class LuminaServer:
         self._broadcast_task: asyncio.Task[None] | None = None
         self._sequence = 0
         self._playback_info: dict[str, Any] | None = None
+        self._audio_path: str | None = None
+        self._current_timestamp: float = 0.0
         self._fixture_map = FixtureMap()
 
         self._app = Starlette(
             routes=[
                 WebSocketRoute("/ws", self._ws_endpoint),
                 Route("/health", self._health_endpoint),
+                Route("/audio", self._serve_audio),
+            ],
+            middleware=[
+                Middleware(
+                    CORSMiddleware,
+                    allow_origins=["*"],
+                    allow_methods=["GET"],
+                    allow_headers=["*"],
+                ),
             ],
         )
 
@@ -92,6 +105,14 @@ class LuminaServer:
         """The ASGI application (for uvicorn or testing)."""
         return self._app
 
+    def set_audio_file(self, path: str) -> None:
+        """Set the audio file path to serve via /audio endpoint.
+
+        Args:
+            path: Full path to the audio file.
+        """
+        self._audio_path = path
+
     def set_playback_info(self, filename: str, duration: float) -> None:
         """Set playback info to send to newly connected clients.
 
@@ -103,6 +124,8 @@ class LuminaServer:
             "type": "playback_start",
             "filename": filename,
             "duration": duration,
+            "audio_url": "/audio",
+            "start_timestamp": self._current_timestamp,
         }
 
     @property
@@ -182,10 +205,12 @@ class LuminaServer:
         with contextlib.suppress(Exception):
             await websocket.send_text(json.dumps(self._fixture_layout_msg()))
 
-        # Send playback info so the simulator can auto-start audio
+        # Send playback info so the simulator can auto-start audio.
+        # Inject the live timestamp so late-joining clients seek to the correct position.
         if self._playback_info is not None:
             with contextlib.suppress(Exception):
-                await websocket.send_text(json.dumps(self._playback_info))
+                msg = {**self._playback_info, "start_timestamp": self._current_timestamp}
+                await websocket.send_text(json.dumps(msg))
 
         try:
             while True:
@@ -209,6 +234,12 @@ class LuminaServer:
         """HTTP health check."""
         return JSONResponse({"status": "ok", "clients": len(self._clients)})
 
+    async def _serve_audio(self, request: Request) -> FileResponse | JSONResponse:
+        """Serve the current audio file via HTTP for browser loading."""
+        if self._audio_path is None:
+            return JSONResponse({"error": "No audio loaded"}, status_code=404)
+        return FileResponse(self._audio_path, media_type="audio/mpeg")
+
     # ── Broadcast loop ───────────────────────────────────────────
 
     async def _broadcast_loop(self) -> None:
@@ -221,6 +252,9 @@ class LuminaServer:
         """
         while True:
             music_state, commands = await self._state_queue.get()
+
+            # Track current playback position for late-joining clients
+            self._current_timestamp = music_state.timestamp
 
             if not self._clients:
                 continue  # nothing to send — skip serialization

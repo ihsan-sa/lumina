@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Room } from "./components/Room";
 import { Fixture } from "./components/Fixture";
 import { ControlPanel } from "./components/ControlPanel";
-import { useWebSocket } from "./hooks/useWebSocket";
+import { useWebSocket, BACKEND_BASE_URL } from "./hooks/useWebSocket";
 import { useAudio } from "./hooks/useAudio";
 import type { FixtureCommand, MusicState } from "./types/fixtures";
 
@@ -99,6 +99,7 @@ export default function App() {
   const musicState = useMusicStatePolled(musicStateRef);
   const [autoPlayActive, setAutoPlayActive] = useState(false);
   const autoPlayTriggered = useRef(false);
+  const lastMusicStateTimestamp = useRef(0);
 
   // Test mode state
   const [testPhase, setTestPhase] = useState<TestPhase>("idle");
@@ -160,16 +161,59 @@ export default function App() {
     };
   }, []);
 
-  // Auto-play banner
+  // Auto-load and auto-play audio from backend
   useEffect(() => {
-    const id = setInterval(() => {
-      if (playbackInfoRef.current && !autoPlayTriggered.current) {
-        autoPlayTriggered.current = true;
-        setAutoPlayActive(true);
+    const id = setInterval(async () => {
+      if (!playbackInfoRef.current || autoPlayTriggered.current) return;
+
+      const playbackInfo = playbackInfoRef.current;
+      console.log("[LUMINA autoplay] playback_start received:", playbackInfo);
+      autoPlayTriggered.current = true;
+      setAutoPlayActive(true);
+
+      if (!playbackInfo.audio_url) {
+        console.warn("[LUMINA autoplay] no audio_url in playback_start, skipping auto-load");
+        return;
+      }
+
+      // Resolve relative URL against the backend (not the Vite dev server)
+      const url = playbackInfo.audio_url.startsWith("/")
+        ? `${BACKEND_BASE_URL}${playbackInfo.audio_url}`
+        : playbackInfo.audio_url;
+      console.log("[LUMINA autoplay] loading audio from:", url);
+
+      try {
+        await audio.loadUrl(url);
+        console.log("[LUMINA autoplay] audio loaded, seeking to:", playbackInfo.start_timestamp);
+        if (playbackInfo.start_timestamp !== undefined && playbackInfo.start_timestamp > 0.1) {
+          audio.seek(playbackInfo.start_timestamp);
+        }
+        console.log("[LUMINA autoplay] calling audio.play()...");
+        audio.play();
+        sendMessage({ type: "transport", action: "play" });
+        console.log("[LUMINA autoplay] play() called successfully");
+      } catch (err) {
+        console.error("[LUMINA autoplay] failed to load/play audio:", err);
       }
     }, 100);
     return () => clearInterval(id);
-  }, [playbackInfoRef]);
+  }, [audio, playbackInfoRef, sendMessage]);
+
+  // Drift correction: every 2 seconds, sync audio to backend if drift > 0.3s
+  useEffect(() => {
+    if (musicState) {
+      lastMusicStateTimestamp.current = musicState.timestamp;
+    }
+
+    const interval = setInterval(() => {
+      if (!audio.loaded || !audio.playing) return;
+      const drift = Math.abs(audio.currentTime - lastMusicStateTimestamp.current);
+      if (drift > 0.3) {
+        audio.seek(lastMusicStateTimestamp.current);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [audio, musicState]);
 
   const isTestRunning = testPhase !== "idle";
 

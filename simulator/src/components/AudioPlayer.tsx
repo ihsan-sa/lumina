@@ -5,6 +5,7 @@ import type { ClientMessage } from "../types/fixtures";
 interface AudioPlayerProps {
   audio: AudioHandle;
   sendMessage: (msg: ClientMessage) => void;
+  lastTimestamp?: number;
 }
 
 function formatTime(seconds: number): string {
@@ -13,7 +14,7 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function AudioPlayer({ audio, sendMessage }: AudioPlayerProps) {
+export function AudioPlayer({ audio, sendMessage, lastTimestamp }: AudioPlayerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback(
@@ -31,10 +32,14 @@ export function AudioPlayer({ audio, sendMessage }: AudioPlayerProps) {
       audio.pause();
       sendMessage({ type: "transport", action: "pause" });
     } else {
+      // Seek to backend position before resuming to correct drift
+      if (lastTimestamp !== undefined && lastTimestamp > 0) {
+        audio.seek(lastTimestamp);
+      }
       audio.play();
       sendMessage({ type: "transport", action: "play" });
     }
-  }, [audio, sendMessage]);
+  }, [audio, lastTimestamp, sendMessage]);
 
   const handleSeek = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -34,6 +34,7 @@ from lumina.lighting.patterns import (
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
+    BumpTracker,
     Color,
     energy_brightness,
     lerp_color,
@@ -85,6 +86,7 @@ class GenericProfile(BaseProfile):
 
     def __init__(self, fixture_map: FixtureMap) -> None:
         super().__init__(fixture_map)
+        self._bump = BumpTracker(decay_rate=8.0)
         self._pars = self._map.by_type(FixtureType.PAR)
         self._strobes = self._map.by_type(FixtureType.STROBE)
         self._led_bars = self._map.by_type(FixtureType.LED_BAR)
@@ -132,14 +134,19 @@ class GenericProfile(BaseProfile):
         eb = energy_brightness(state.energy)
         base_intensity = (0.25 + eb * 0.55) * section_mult
 
-        # Kick boost
-        kick_boost = 0.0
+        # Sub-bass intensity boost on PARs
+        if state.sub_bass_energy > 0.4:
+            base_intensity = min(1.0, base_intensity + state.sub_bass_energy * 0.1)
+
+        # Kick bump: trigger on kick, read decay every frame
         if state.onset_type == "kick":
-            kick_boost = 0.2
-        elif state.is_beat:
-            kick_boost = 0.1
+            self._bump.trigger("pars", state.timestamp)
+        kick_boost = self._bump.get_intensity(
+            "pars", state.timestamp, peak=0.2, floor=0.0,
+        )
 
         color = self._cycle_color(state)
+        color = self._color_temperature(state.spectral_centroid, color, GENTLE_CYAN)
 
         # Fixture escalation
         active_pars = select_active_fixtures(

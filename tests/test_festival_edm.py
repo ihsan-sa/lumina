@@ -133,9 +133,9 @@ class TestDrop:
         # Advance past the initial flash (18 frames) by calling generate enough times
         for i in range(20):
             p.generate(_state(segment="drop", energy=0.9, timestamp=5.0 + i * 0.016))
-        state1 = _state(segment="drop", energy=0.9, timestamp=6.0)
+        state1 = _state(segment="drop", energy=0.9, timestamp=6.0, bar_phase=0.2)
         cmds1 = p.generate(state1)
-        state2 = _state(segment="drop", energy=0.9, timestamp=6.1)
+        state2 = _state(segment="drop", energy=0.9, timestamp=6.1, bar_phase=0.7)
         cmds2 = p.generate(state2)
         # At least one par should have different color values
         par_colors_1 = [(c.red, c.green, c.blue) for c in cmds1 if c.fixture_id <= 4]

@@ -7,17 +7,25 @@ from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureInfo, FixtureMap, FixtureType, FixtureRole
 from lumina.lighting.patterns import (
     alternate,
+    blinder,
     breathe,
     chase_bounce,
     chase_lr,
+    chase_mirror,
+    color_pop,
     color_split,
     converge,
     diverge,
+    flicker,
+    gradient_y,
+    lightning_flash,
     make_command,
+    rainbow_roll,
     random_scatter,
     select_active_fixtures,
     spotlight_isolate,
     strobe_burst,
+    strobe_chase,
     stutter,
     wash_hold,
 )
@@ -345,3 +353,200 @@ class TestSelectActiveFixtures:
         pars = _pars()[:2]
         active = select_active_fixtures(pars, 0.1, low_count=5)
         assert len(active) == 2
+
+
+# ─── chase_mirror ────────────────────────────────────────────────
+
+
+class TestChaseMirror:
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = chase_mirror(pars, _state(), 1.0, RED)
+        assert len(result) == len(pars)
+
+    def test_empty_fixtures(self) -> None:
+        assert chase_mirror([], _state(), 1.0, RED) == {}
+
+    def test_symmetric_brightness(self) -> None:
+        """Left and right sides should have similar total brightness."""
+        pars = _pars()
+        result = chase_mirror(pars, _state(bar_phase=0.25), 1.0, RED, width=0.4)
+        left = [f for f in pars if f.position[0] < 2.5]
+        right = [f for f in pars if f.position[0] >= 2.5]
+        left_sum = sum(result[f.fixture_id].red for f in left)
+        right_sum = sum(result[f.fixture_id].red for f in right)
+        # Mirror pattern should produce roughly equal L/R brightness
+        assert abs(left_sum - right_sum) < left_sum * 0.5 + 10
+
+
+# ─── strobe_chase ────────────────────────────────────────────────
+
+
+class TestStrobeChase:
+    def test_one_active(self) -> None:
+        """Only one fixture should be active at a time."""
+        strobes = _strobes()
+        result = strobe_chase(strobes, _state(bar_phase=0.0), 1.0, WHITE)
+        active = [fid for fid, cmd in result.items()
+                  if cmd.strobe_rate > 0 or cmd.red > 0]
+        assert len(active) == 1
+
+    def test_correct_fixture_count(self) -> None:
+        strobes = _strobes()
+        result = strobe_chase(strobes, _state(), 1.0, WHITE)
+        assert len(result) == len(strobes)
+
+    def test_empty(self) -> None:
+        assert strobe_chase([], _state(), 1.0, RED) == {}
+
+
+# ─── lightning_flash ──────────────────────────────────────────────
+
+
+class TestLightningFlash:
+    def test_flash_at_beat_start(self) -> None:
+        """Near beat start should have high intensity."""
+        pars = _pars()
+        result = lightning_flash(pars, _state(beat_phase=0.0, bpm=120.0), 1.0, WHITE)
+        for cmd in result.values():
+            assert cmd.red > 0 or cmd.white > 0
+
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = lightning_flash(pars, _state(), 1.0, WHITE)
+        assert len(result) == len(pars)
+
+    def test_empty(self) -> None:
+        assert lightning_flash([], _state(), 1.0, RED) == {}
+
+
+# ─── color_pop ───────────────────────────────────────────────────
+
+
+class TestColorPop:
+    def test_complement_on_beat(self) -> None:
+        """On beat, color should be complementary to input."""
+        pars = _pars()
+        result = color_pop(pars, _state(is_beat=True), 1.0, RED)
+        # Complement of RED(1,0,0) is (0,1,1) → cyan
+        for cmd in result.values():
+            assert cmd.green > 0 or cmd.blue > 0
+
+    def test_base_color_off_beat(self) -> None:
+        pars = _pars()
+        result = color_pop(pars, _state(is_beat=False), 1.0, RED)
+        for cmd in result.values():
+            assert cmd.red > 0
+
+    def test_empty(self) -> None:
+        assert color_pop([], _state(), 1.0, RED) == {}
+
+
+# ─── rainbow_roll ────────────────────────────────────────────────
+
+
+class TestRainbowRoll:
+    def test_different_hues(self) -> None:
+        """Each fixture should have a different hue."""
+        pars = _pars()
+        result = rainbow_roll(pars, _state(bar_phase=0.0), 1.0, RED)
+        colors = [(result[f.fixture_id].red, result[f.fixture_id].green,
+                   result[f.fixture_id].blue) for f in pars]
+        # Not all the same
+        assert len(set(colors)) > 1
+
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = rainbow_roll(pars, _state(), 1.0, RED)
+        assert len(result) == len(pars)
+
+    def test_empty(self) -> None:
+        assert rainbow_roll([], _state(), 1.0, RED) == {}
+
+    def test_hue_range(self) -> None:
+        """With restricted hue range, colors should stay warm."""
+        pars = _pars()
+        result = rainbow_roll(pars, _state(), 1.0, RED,
+                              hue_min=0.0, hue_max=0.15)
+        for cmd in result.values():
+            # Warm hues: red should dominate
+            assert cmd.red >= cmd.blue
+
+
+# ─── flicker ─────────────────────────────────────────────────────
+
+
+class TestFlicker:
+    def test_deterministic(self) -> None:
+        pars = _pars()
+        state = _state()
+        r1 = flicker(pars, state, 1.0, RED)
+        r2 = flicker(pars, state, 1.0, RED)
+        assert r1 == r2
+
+    def test_per_fixture_variation(self) -> None:
+        pars = _pars()
+        result = flicker(pars, _state(), 1.0, RED, jitter=0.8)
+        reds = [result[f.fixture_id].red for f in pars]
+        assert len(set(reds)) > 1  # Different intensities
+
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = flicker(pars, _state(), 1.0, RED)
+        assert len(result) == len(pars)
+
+    def test_empty(self) -> None:
+        assert flicker([], _state(), 1.0, RED) == {}
+
+
+# ─── gradient_y ──────────────────────────────────────────────────
+
+
+class TestGradientY:
+    def test_front_brighter_than_back(self) -> None:
+        """Front fixtures should be brighter with default back=dimmed."""
+        pars = _pars()
+        result = gradient_y(pars, _state(), 1.0, RED)
+        front = [f for f in pars if f.position[1] < 3.5]
+        back = [f for f in pars if f.position[1] >= 3.5]
+        front_sum = sum(result[f.fixture_id].red for f in front)
+        back_sum = sum(result[f.fixture_id].red for f in back)
+        assert front_sum > back_sum
+
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = gradient_y(pars, _state(), 1.0, RED)
+        assert len(result) == len(pars)
+
+    def test_empty(self) -> None:
+        assert gradient_y([], _state(), 1.0, RED) == {}
+
+
+# ─── blinder ─────────────────────────────────────────────────────
+
+
+class TestBlinder:
+    def test_all_max_output(self) -> None:
+        """All fixtures should be at max brightness."""
+        pars = _pars()
+        result = blinder(pars, _state(), 1.0, RED)
+        for cmd in result.values():
+            # White color: all channels at 255
+            assert cmd.red == 255
+            assert cmd.green == 255
+            assert cmd.blue == 255
+
+    def test_strobes_get_strobe_params(self) -> None:
+        strobes = _strobes()
+        result = blinder(strobes, _state(), 1.0, RED)
+        for cmd in result.values():
+            assert cmd.strobe_rate == 255
+            assert cmd.strobe_intensity == 255
+
+    def test_correct_fixture_count(self) -> None:
+        pars = _pars()
+        result = blinder(pars, _state(), 1.0, RED)
+        assert len(result) == len(pars)
+
+    def test_empty(self) -> None:
+        assert blinder([], _state(), 1.0, RED) == {}

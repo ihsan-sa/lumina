@@ -3,12 +3,15 @@ import type { ClientMessage, FixtureCommand, FixtureConfig, MusicState, ServerMe
 import { backendFixtureToConfig, FALLBACK_FIXTURES } from "../types/fixtures";
 
 const WS_URL = `ws://${window.location.hostname}:8765/ws`;
+export const BACKEND_BASE_URL = `http://${window.location.hostname}:8765`;
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 
 export interface PlaybackInfo {
   filename: string;
   duration: number;
+  audio_url?: string;
+  start_timestamp?: number;
 }
 
 export interface WebSocketHandle {
@@ -85,9 +88,12 @@ export function useWebSocket(): WebSocketHandle {
         } else if (msg.type === "music_state") {
           musicStateRef.current = { ...DEFAULT_MUSIC_STATE, ...msg.state };
         } else if (msg.type === "playback_start") {
+          console.log("[LUMINA ws] playback_start received:", msg);
           playbackInfoRef.current = {
             filename: msg.filename,
             duration: msg.duration,
+            audio_url: msg.audio_url,
+            start_timestamp: msg.start_timestamp,
           };
         } else if (msg.type === "fixture_layout") {
           const configs = msg.fixtures.map(backendFixtureToConfig);

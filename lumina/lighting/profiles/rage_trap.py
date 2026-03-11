@@ -28,6 +28,7 @@ from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
 from lumina.lighting.patterns import (
+    blinder,
     breathe,
     chase_lr,
     converge,
@@ -42,7 +43,9 @@ from lumina.lighting.patterns import (
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
+    BumpTracker,
     Color,
+    FixtureInfo,
     lerp_color,
 )
 
@@ -87,6 +90,9 @@ class RageTrapProfile(BaseProfile):
         self._lasers = self._map.by_type(FixtureType.LASER)
         self._pars_lr = self._map.sorted_by_x(self._pars)
 
+        # Override bump tracker: 50ms snap — rage is sharp
+        self._bump = BumpTracker(decay_rate=20.0)
+
         # State tracking
         self._segment_start_time: float = 0.0
         self._last_segment: str = ""
@@ -94,8 +100,62 @@ class RageTrapProfile(BaseProfile):
         self._drop_frame_count: int = 0
         self._was_pre_drop: bool = False
 
+    @property
+    def motif_pattern_preferences(self) -> list[str]:
+        """Rage trap prefers aggressive, binary patterns for motifs."""
+        return ["chase_lr", "alternate", "strobe_burst", "random_scatter"]
+
+    @property
+    def motif_color_palette(self) -> list[Color]:
+        """Rage trap color cycle: reds and whites only."""
+        return [BLOOD_RED, DEEP_RED, WARM_RED, DARK_ORANGE]
+
+    def _headroom_scale(self, state: MusicState, intensity: float) -> float:
+        """Apply headroom to intensity, rage-trap style.
+
+        Rage trap keeps strobes at full but scales par/bar intensity.
+        During drops, headroom is ignored (always full).
+
+        Args:
+            state: Current music state.
+            intensity: Raw intensity value.
+
+        Returns:
+            Headroom-adjusted intensity.
+        """
+        if state.segment == "drop":
+            return intensity  # drops are always full
+        return intensity * max(0.15, state.headroom)
+
+    def _get_active_pars(self, state: MusicState) -> list[FixtureInfo]:
+        """Get active pars based on layer count (if available) or energy.
+
+        Uses layer_count for fixture selection when available, falling
+        back to energy-based selection.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            List of active par fixtures.
+        """
+        if state.layer_count > 0:
+            n = self._layer_fixture_count(
+                state.layer_count, state.energy, len(self._pars)
+            )
+            return self._pars_lr[:n]
+        # Fallback to energy-based selection
+        return select_active_fixtures(self._pars, state.energy)
+
     def generate(self, state: MusicState) -> list[FixtureCommand]:
         """Generate rage-trap fixture commands for the current frame.
+
+        Decision hierarchy:
+        1. Arc layer: headroom caps intensity (except drops)
+        2. Note pattern: if regular notes detected, cycle fixtures
+        3. Motif layer: if recognized motif, use assigned pattern
+        4. Segment layer: existing verse/chorus/drop routing
+        5. Reactive layer: onset reactions capped by headroom
 
         Args:
             state: Current music analysis frame.
@@ -120,13 +180,13 @@ class RageTrapProfile(BaseProfile):
         if segment == "drop":
             self._drop_frame_count += 1
 
-        # Pre-drop: accelerating strobe
+        # Pre-drop: accelerating strobe (bypass motif/note layers)
         if state.drop_probability > 0.6 and segment != "drop":
             self._was_pre_drop = True
             self._note_patterns("pre_drop_build")
             return self._pre_drop_build(state)
 
-        # Drop hit
+        # Drop hit (bypass motif/note layers — drops are always full)
         if segment == "drop" and energy > 0.5:
             self._note_patterns("drop_explosion")
             result = self._drop_explosion(state)
@@ -134,6 +194,21 @@ class RageTrapProfile(BaseProfile):
             return result
 
         self._was_pre_drop = False
+
+        # ─── Note-level pattern (each note = different light) ─────
+        if state.notes_per_beat > 0 and segment not in ("breakdown", "bridge", "intro", "outro"):
+            active_pars = self._get_active_pars(state)
+            note_cmds = self._apply_note_pattern(state, active_pars, BLOOD_RED)
+            if note_cmds is not None:
+                self._note_patterns("note_pattern")
+                # Add strobes/bars/lasers as quiet background
+                for f in self._strobes + self._led_bars:
+                    note_cmds[f.fixture_id] = make_command(f, BLACK, 0.0)
+                for f in self._lasers:
+                    note_cmds[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+                return self._merge_commands(note_cmds)
+
+        # ─── Segment-based routing (with headroom awareness) ──────
 
         # Breakdown / bridge
         if segment in ("breakdown", "bridge"):
@@ -207,20 +282,28 @@ class RageTrapProfile(BaseProfile):
 
         # Initial white flash (200ms = ~12 frames at 60fps)
         if self._was_pre_drop and self._drop_frame_count <= _DROP_HIT_WHITE_FRAMES:
-            # Strobe burst on strobes
-            burst = strobe_burst(
-                self._strobes, state, state.timestamp, STROBE_WHITE,
-            )
-            commands.update(burst)
-            # All pars + bars full white
-            par_cmds = wash_hold(
-                self._pars, state, state.timestamp, STROBE_WHITE, intensity=1.0,
-            )
-            commands.update(par_cmds)
-            bar_cmds = wash_hold(
-                self._led_bars, state, state.timestamp, STROBE_WHITE, intensity=1.0,
-            )
-            commands.update(bar_cmds)
+            if self._drop_frame_count <= 6:
+                # Frames 1-6: blinder — every fixture at absolute max
+                all_fixtures = self._pars + self._strobes + self._led_bars
+                blind_cmds = blinder(
+                    all_fixtures, state, state.timestamp, STROBE_WHITE,
+                )
+                commands.update(blind_cmds)
+            else:
+                # Frames 7-12: strobe burst + white wash (existing behavior)
+                burst = strobe_burst(
+                    self._strobes, state, state.timestamp, STROBE_WHITE,
+                )
+                commands.update(burst)
+                # All pars + bars full white
+                par_cmds = wash_hold(
+                    self._pars, state, state.timestamp, STROBE_WHITE, intensity=1.0,
+                )
+                commands.update(par_cmds)
+                bar_cmds = wash_hold(
+                    self._led_bars, state, state.timestamp, STROBE_WHITE, intensity=1.0,
+                )
+                commands.update(bar_cmds)
             for f in self._lasers:
                 commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_DROP_PATTERN)
             return self._merge_commands(commands)
@@ -338,12 +421,12 @@ class RageTrapProfile(BaseProfile):
     def _verse_reactive(self, state: MusicState) -> list[FixtureCommand]:
         """Evolving verse with fixture build-up, chases, and blackout gaps.
 
-        Uses select_active_fixtures for escalation. Onset reactions via
-        patterns: kicks use wash_hold flash, snares use random_scatter,
-        claps use random_scatter (ad-lib scatter).
+        Uses layer_count for fixture escalation (with energy fallback).
+        Onset reactions capped by headroom. Headroom scales par intensity.
         """
         commands: dict[int, FixtureCommand] = {}
         energy = state.energy
+        headroom = state.headroom
 
         # Time since segment started (reset on each segment transition)
         dt = max(0.0, state.timestamp - self._segment_start_time)
@@ -357,24 +440,32 @@ class RageTrapProfile(BaseProfile):
         if bar_cycle >= gap_start:
             return self._blackout()
 
-        # Fixture build-up via energy escalation
-        active_pars = select_active_fixtures(
-            self._pars, state.energy,
-            low_count=max(1, 1 + int(bars_elapsed / _BARS_PER_FIXTURE_ADD)),
-            mid_count=6, high_threshold=0.8,
-        )
+        # Fixture count: layer-driven (with energy/time fallback)
+        active_pars = self._get_active_pars(state)
+        if not active_pars:
+            # Fallback: energy-based escalation
+            active_pars = select_active_fixtures(
+                self._pars, energy,
+                low_count=max(1, 1 + int(bars_elapsed / _BARS_PER_FIXTURE_ADD)),
+                mid_count=6, high_threshold=0.8,
+            )
 
         # Color temperature: cooler → warmer as energy rises
-        verse_color = lerp_color(COOL_RED, WARM_RED, state.energy)
+        verse_color = lerp_color(COOL_RED, WARM_RED, energy)
 
-        # Onset reactions
+        # Sub-bass saturation: deepen color when sub-bass is heavy
+        if state.sub_bass_energy > 0.5:
+            verse_color = self._bass_saturate(state.sub_bass_energy, verse_color)
+
+        # Onset reactions (headroom caps intensity)
         if state.onset_type == "kick":
-            # Full red flash on active pars
+            self._bump.trigger("pars", state.timestamp)
+            kick_int = self._headroom_scale(state, 1.0)
             par_cmds = wash_hold(
-                active_pars, state, state.timestamp, BLOOD_RED, intensity=1.0,
+                active_pars, state, state.timestamp, BLOOD_RED, intensity=kick_int,
             )
             commands.update(par_cmds)
-            # Strobes alternate left/right on kicks
+            # Strobes alternate left/right on kicks (strobes bypass headroom)
             beat_idx = int(state.timestamp * bpm / 60.0)
             left_strobes = self._map.get_by_group("strobe_left")
             right_strobes = self._map.get_by_group("strobe_right")
@@ -388,42 +479,47 @@ class RageTrapProfile(BaseProfile):
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         elif state.onset_type == "snare":
-            # Single random fixture white flash
+            snare_int = self._headroom_scale(state, 1.0)
             par_cmds = random_scatter(
                 active_pars, state, state.timestamp, STROBE_WHITE,
-                density=1.0 / max(len(active_pars), 1), intensity=1.0,
+                density=1.0 / max(len(active_pars), 1), intensity=snare_int,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         elif state.onset_type == "clap":
-            # Ad-lib scatter: random_scatter with red/orange
+            clap_int = self._headroom_scale(state, 1.0)
             par_cmds = random_scatter(
                 self._pars, state, state.timestamp, DARK_ORANGE,
-                density=0.4, intensity=1.0,
+                density=0.4, intensity=clap_int,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         elif state.is_beat:
-            # Beat pulse: chase sweep on active pars
+            beat_int = self._headroom_scale(state, 0.85)
             par_cmds = chase_lr(
                 active_pars, state, state.timestamp, verse_color,
-                speed=1.0, width=0.4, intensity=0.85,
+                speed=1.0, width=0.4, intensity=beat_int,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
         else:
-            # Between beats: energy-aware floor (binary contrast, but lifted at high energy)
+            # Between beats: energy-aware floor scaled by headroom
             if energy > 0.6:
-                between_intensity = 0.20 + (energy - 0.6) / 0.4 * 0.10  # 20-30%
+                between_intensity = 0.20 + (energy - 0.6) / 0.4 * 0.10
             elif energy < 0.4:
-                between_intensity = 0.0  # full blackout at low energy
+                between_intensity = 0.0
             else:
-                between_intensity = 0.05  # near-dark at mid energy
+                between_intensity = 0.05
+            between_intensity = self._headroom_scale(state, between_intensity)
+            # Bump decay: smooth tail after kick instead of instant drop
+            between_intensity = self._bump.get_intensity(
+                "pars", state.timestamp, peak=1.0, floor=between_intensity,
+            )
             par_cmds = wash_hold(
                 active_pars, state, state.timestamp, verse_color, intensity=between_intensity,
             )
@@ -431,14 +527,22 @@ class RageTrapProfile(BaseProfile):
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
+        # Hi-hat: bump LED bars on hi-hat onsets
+        if state.onset_type == "hihat":
+            self._bump.trigger("bars", state.timestamp)
+
         # Blackout inactive pars
         for f in self._pars:
             if f.fixture_id not in commands:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # LED bars: follow pars at reduced intensity during verse
+        # LED bars: follow pars at reduced intensity during verse + hi-hat bump
+        bar_int = self._headroom_scale(state, 0.10)
+        bar_int = self._bump.get_intensity(
+            "bars", state.timestamp, peak=0.40, floor=bar_int,
+        )
         bar_cmds = wash_hold(
-            self._led_bars, state, state.timestamp, verse_color, intensity=0.10,
+            self._led_bars, state, state.timestamp, verse_color, intensity=bar_int,
         )
         commands.update(bar_cmds)
 
@@ -451,57 +555,67 @@ class RageTrapProfile(BaseProfile):
     def _chorus_reactive(self, state: MusicState) -> list[FixtureCommand]:
         """Chorus / hook — brighter and wider than verse.
 
-        All pars active at 35-50% base intensity. Beat-driven strobes fire
-        on every beat (not just alternating). LED bars at 40%. Laser off.
-        Energy-aware: high energy pushes toward full brightness.
+        Layer-aware fixture count. Headroom scales par intensity.
+        Beat-driven strobes. LED bars scaled by headroom. Laser off.
         """
         commands: dict[int, FixtureCommand] = {}
         energy = state.energy
         bpm = max(60.0, state.bpm)
 
-        # All pars active — chorus is wider than verse
-        chorus_color = lerp_color(WARM_RED, BLOOD_RED, energy)
-        base_intensity = 0.35 + energy * 0.15  # 35-50%
+        # Chorus uses more pars than verse — layer-driven or all
+        if state.layer_count >= 3:
+            chorus_pars = self._pars  # dense = all pars
+        else:
+            chorus_pars = self._get_active_pars(state)
+            if len(chorus_pars) < len(self._pars) // 2:
+                chorus_pars = self._pars  # chorus should be wide
 
-        # Onset reactions
+        chorus_color = lerp_color(WARM_RED, BLOOD_RED, energy)
+
+        # Sub-bass saturation: deepen color when sub-bass is heavy
+        if state.sub_bass_energy > 0.5:
+            chorus_color = self._bass_saturate(state.sub_bass_energy, chorus_color)
+
+        base_intensity = self._headroom_scale(state, 0.35 + energy * 0.15)
+
+        # Onset reactions (headroom scales par intensity)
         if state.onset_type == "kick":
-            # Full-intensity flash on all pars
+            self._bump.trigger("pars", state.timestamp)
+            kick_int = self._headroom_scale(state, 1.0)
             par_cmds = wash_hold(
-                self._pars, state, state.timestamp, BLOOD_RED, intensity=1.0,
+                chorus_pars, state, state.timestamp, BLOOD_RED, intensity=kick_int,
             )
             commands.update(par_cmds)
-            # Both strobes fire on kick
             burst = strobe_burst(self._strobes, state, state.timestamp, STROBE_WHITE)
             commands.update(burst)
 
         elif state.onset_type == "snare":
-            # Wide scatter across all pars
+            snare_int = self._headroom_scale(state, 1.0)
             par_cmds = random_scatter(
-                self._pars, state, state.timestamp, STROBE_WHITE,
-                density=0.5, intensity=1.0,
+                chorus_pars, state, state.timestamp, STROBE_WHITE,
+                density=0.5, intensity=snare_int,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         elif state.onset_type == "clap":
-            # Orange scatter across all pars
+            clap_int = self._headroom_scale(state, 1.0)
             par_cmds = random_scatter(
-                self._pars, state, state.timestamp, DARK_ORANGE,
-                density=0.6, intensity=1.0,
+                chorus_pars, state, state.timestamp, DARK_ORANGE,
+                density=0.6, intensity=clap_int,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         elif state.is_beat:
-            # Beat: chase at higher intensity across all pars
+            beat_int = self._headroom_scale(state, 0.90)
             par_cmds = chase_lr(
-                self._pars, state, state.timestamp, chorus_color,
-                speed=1.0, width=0.5, intensity=0.90,
+                chorus_pars, state, state.timestamp, chorus_color,
+                speed=1.0, width=0.5, intensity=beat_int,
             )
             commands.update(par_cmds)
-            # Single strobe flicker on beat
             beat_idx = int(state.timestamp * bpm / 60.0)
             left_strobes = self._map.get_by_group("strobe_left")
             right_strobes = self._map.get_by_group("strobe_right")
@@ -515,17 +629,33 @@ class RageTrapProfile(BaseProfile):
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
         else:
-            # Between beats: raised floor (chorus is hotter than verse)
+            # Bump decay: smooth tail after kick instead of instant drop
+            chorus_between = self._bump.get_intensity(
+                "pars", state.timestamp, peak=1.0, floor=base_intensity,
+            )
             par_cmds = wash_hold(
-                self._pars, state, state.timestamp, chorus_color, intensity=base_intensity,
+                chorus_pars, state, state.timestamp, chorus_color, intensity=chorus_between,
             )
             commands.update(par_cmds)
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # LED bars at 40% during chorus (higher than verse's 10%)
+        # Hi-hat: bump LED bars on hi-hat onsets
+        if state.onset_type == "hihat":
+            self._bump.trigger("bars", state.timestamp)
+
+        # Blackout inactive pars in chorus
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # LED bars scaled by headroom (40% base) + hi-hat bump
+        bar_int = self._headroom_scale(state, 0.40)
+        bar_int = self._bump.get_intensity(
+            "bars", state.timestamp, peak=0.60, floor=bar_int,
+        )
         bar_cmds = wash_hold(
-            self._led_bars, state, state.timestamp, chorus_color, intensity=0.40,
+            self._led_bars, state, state.timestamp, chorus_color, intensity=bar_int,
         )
         commands.update(bar_cmds)
 

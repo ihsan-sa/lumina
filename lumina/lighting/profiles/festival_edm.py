@@ -27,15 +27,18 @@ from lumina.lighting.patterns import (
     converge,
     diverge,
     make_command,
+    rainbow_roll,
     select_active_fixtures,
     spotlight_isolate,
     strobe_burst,
+    strobe_chase,
     stutter,
     wash_hold,
 )
 from lumina.lighting.profiles.base import (
     BLACK,
     BaseProfile,
+    BumpTracker,
     Color,
     color_from_hsv,
     energy_brightness,
@@ -95,6 +98,7 @@ class FestivalEdmProfile(BaseProfile):
         self._build_start_time: float = -1.0
         self._last_segment: str = ""
         self._drop_frame: int = 0
+        self._bump = BumpTracker(decay_rate=7.0)  # 150ms punchy decay
 
     def generate(self, state: MusicState) -> list[FixtureCommand]:
         """Generate festival EDM fixture commands.
@@ -266,15 +270,12 @@ class FestivalEdmProfile(BaseProfile):
             )
             commands.update(par_cmds)
         else:
-            # Rapid color cycling per par
-            cycle_speed = state.timestamp * 4.0
-            n_pars = len(self._pars_lr)
-            for i, f in enumerate(self._pars_lr):
-                hue_offset = i / max(n_pars, 1)
-                hue = (cycle_speed + hue_offset) % 1.0
-                color = color_from_hsv(hue, 1.0, 1.0)
-                color = Color(color.r, color.g, color.b, w=0.40)
-                commands[f.fixture_id] = make_command(f, color, intensity=1.0)
+            # Rapid rainbow color cycling on pars
+            par_cmds = rainbow_roll(
+                self._pars, state, state.timestamp, HOT_WHITE,
+                speed=2.0, intensity=1.0,
+            )
+            commands.update(par_cmds)
 
         # Strobes: burst on kicks/beats
         if state.onset_type == "kick" or state.is_beat:
@@ -318,9 +319,29 @@ class FestivalEdmProfile(BaseProfile):
             _GROOVE_COLORS[(next_idx + 2) % n_colors], blend_t,
         )
 
+        # Apply spectral centroid: shift groove color warm/cool
+        groove_color = self._color_temperature(state.spectral_centroid, AMBER, ICE_BLUE)
+        groove_color = lerp_color(
+            lerp_color(_GROOVE_COLORS[color_idx], _GROOVE_COLORS[next_idx], blend_t),
+            groove_color,
+            0.4,
+        )
+
+        # Sub-bass saturation boost
+        if state.sub_bass_energy > 0.4:
+            groove_color = self._bass_saturate(state.sub_bass_energy, groove_color)
+
         base_intensity = 0.50 + energy_brightness(state.energy) * 0.35
+
+        # Kick: trigger bump tracker for punchy decay
         if state.onset_type == "kick":
-            base_intensity = min(1.0, base_intensity + 0.15)
+            self._bump.trigger("pars", state.timestamp)
+        bump_boost = self._bump.get_intensity("pars", state.timestamp, peak=0.15, floor=0.0)
+        base_intensity = min(1.0, base_intensity + bump_boost)
+
+        # Hi-hat: trigger bump on LED bars
+        if state.onset_type == "hihat":
+            self._bump.trigger("bars", state.timestamp)
 
         # Fixture escalation
         active_pars = select_active_fixtures(
@@ -338,20 +359,21 @@ class FestivalEdmProfile(BaseProfile):
             if f.fixture_id not in commands:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)
 
-        # LED bars: slow chase
+        # LED bars: slow chase + hi-hat bump brightness
+        bar_bump = self._bump.get_intensity("bars", state.timestamp, peak=0.3, floor=0.0)
         bar_cmds = chase_lr(
             self._led_bars, state, state.timestamp, groove_color,
-            speed=0.25, width=0.6, intensity=0.6,
+            speed=0.25, width=0.6, intensity=0.6 + bar_bump,
         )
         commands.update(bar_cmds)
 
-        # Strobes: pulse on downbeats
+        # Strobes: strobe_chase on downbeats, pulse on beats
         if state.is_downbeat:
-            burst = strobe_burst(
+            strobe_cmds = strobe_chase(
                 self._strobes, state, state.timestamp, groove_color,
-                rate=180, burst_intensity=200,
+                speed=1.0, intensity=1.0,
             )
-            commands.update(burst)
+            commands.update(strobe_cmds)
         elif state.is_beat:
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(

@@ -23,6 +23,10 @@ from typing import Any
 
 import numpy as np
 
+from lumina.analysis.arc_planner import ArcPlanner
+from lumina.analysis.layer_tracker import LayerTracker
+from lumina.analysis.motif_detector import MotifDetector
+from lumina.analysis.song_score import ScoreFrame, SongScore
 from lumina.audio.beat_detector import BeatDetector, BeatInfo
 from lumina.audio.drop_predictor import DropFrame, DropPredictor
 from lumina.audio.energy_tracker import EnergyFrame, EnergyTracker
@@ -74,6 +78,7 @@ def _assemble_music_state(
     segment: SegmentFrame,
     genre: GenreFrame,
     drop: DropFrame,
+    score: ScoreFrame | None = None,
 ) -> MusicState:
     """Assemble a MusicState from individual analyzer frame outputs.
 
@@ -86,11 +91,12 @@ def _assemble_music_state(
         segment: Segment classification frame.
         genre: Genre classification frame.
         drop: Drop prediction frame.
+        score: Song score frame with layer/motif/arc data (None in live mode).
 
     Returns:
         Complete MusicState for this time frame.
     """
-    return MusicState(
+    state = MusicState(
         timestamp=timestamp,
         bpm=beat.bpm,
         beat_phase=beat.beat_phase,
@@ -107,6 +113,17 @@ def _assemble_music_state(
         onset_type=onset.onset_type if onset is not None else None,
         drop_probability=drop.drop_probability,
     )
+
+    if score is not None:
+        state.layer_count = score.layer_count
+        state.layer_mask = dict(score.layer_mask)
+        state.motif_id = score.motif_id
+        state.motif_repetition = score.motif_repetition
+        state.notes_per_beat = score.notes_per_beat
+        state.note_pattern_phase = score.note_pattern_phase
+        state.headroom = score.headroom
+
+    return state
 
 
 class LuminaApp:
@@ -135,8 +152,20 @@ class LuminaApp:
         """Main entry point — run analysis and start output loop."""
         if self._config.mode == "file":
             await self._run_file_mode()
+        elif self._config.mode == "showcase":
+            await self._run_showcase_mode()
         else:
             logger.error("Live mode not yet implemented")
+
+    async def _run_showcase_mode(self) -> None:
+        """Start server immediately for pattern showcase — no audio analysis."""
+        await self._server.start()
+        transport_task = asyncio.create_task(self._handle_transport())
+        try:
+            await self._idle_loop()
+        finally:
+            transport_task.cancel()
+            await self._server.stop()
 
     async def _run_file_mode(self) -> None:
         """Offline analysis + playback at fps rate.
@@ -255,6 +284,48 @@ class LuminaApp:
             )
             logger.info("Sections: %s", parts)
 
+        # ─── New analysis: layers, motifs, arc, song score ───────────
+        logger.info("Running layer/motif/arc analysis...")
+
+        # Layer tracker: count active stems per frame
+        layer_tracker = LayerTracker(sr=sr)
+        raw_layer_frames = await loop.run_in_executor(
+            None, layer_tracker.analyze, stems,
+        )
+        layer_frames = layer_tracker.resample_to_fps(raw_layer_frames, n, fps)
+
+        # Motif detector: bar-level repetition + note-level patterns
+        motif_detector = MotifDetector(sr=sr, fps=fps)
+        motif_timeline = await loop.run_in_executor(
+            None, motif_detector.detect_macro_motifs, audio, beat_results,
+        )
+        note_patterns = await loop.run_in_executor(
+            None, motif_detector.detect_micro_patterns, stems.other, beat_results,
+        )
+
+        # Arc planner: headroom budgeting
+        arc_planner = ArcPlanner(fps=fps)
+        arc_frames = arc_planner.plan(energy_results, layer_frames, structural_map)
+
+        # Song score: aggregate into per-frame ScoreFrames
+        # Get pattern preferences from the active profile
+        active_profile = self._engine._profiles.get(genre_profile)
+        pattern_prefs = (
+            active_profile.motif_pattern_preferences
+            if active_profile and hasattr(active_profile, "motif_pattern_preferences")
+            else None
+        )
+        song_score = SongScore(fps=fps)
+        score_frames = song_score.build(
+            layer_frames, note_patterns, arc_frames, motif_timeline,
+            n_frames=n, pattern_preferences=pattern_prefs,
+        )
+
+        # Pass motif assignments to the lighting engine
+        self._engine.set_motif_assignments(song_score.motif_assignments)
+
+        logger.info("Layer/motif/arc analysis complete")
+
         # Assemble per-frame MusicState
         frame_interval = 1.0 / fps
         self._music_states = [
@@ -267,6 +338,7 @@ class LuminaApp:
                 segment=segment_results[i],
                 genre=genre_results[i],
                 drop=drop_results[i],
+                score=score_frames[i] if i < len(score_frames) else None,
             )
             for i in range(n)
         ]
@@ -277,6 +349,7 @@ class LuminaApp:
 
         # Tell connecting clients about the audio file for auto-play
         if self._config.file_path:
+            self._server.set_audio_file(str(self._config.file_path))
             self._server.set_playback_info(
                 filename=self._config.file_path.name,
                 duration=duration,
@@ -285,6 +358,7 @@ class LuminaApp:
         transport_task = asyncio.create_task(self._handle_transport())
         try:
             await self._output_loop()
+            await self._idle_loop()
         finally:
             transport_task.cancel()
             await self._server.stop()
@@ -392,6 +466,45 @@ class LuminaApp:
 
         logger.info("Playback complete")
 
+    async def _idle_loop(self) -> None:
+        """Keep the server alive after playback for pattern showcase and transport commands.
+
+        Generates synthetic frames at fps rate so that pattern_override commands
+        sent from the simulator continue to produce visible output even after the
+        song has finished.
+        """
+        logger.info("Entering idle mode — server still accepting connections")
+        frame_interval = 1.0 / self._config.fps
+        timestamp = self._music_states[-1].timestamp if self._music_states else 0.0
+
+        idle_state = MusicState(
+            timestamp=timestamp,
+            bpm=120.0,
+            beat_phase=0.0,
+            bar_phase=0.0,
+            is_beat=False,
+            is_downbeat=False,
+            energy=0.0,
+            energy_derivative=0.0,
+            segment="verse",
+            genre_weights={},
+            vocal_energy=0.0,
+            spectral_centroid=0.5,
+            sub_bass_energy=0.0,
+            onset_type=None,
+            drop_probability=0.0,
+        )
+
+        while True:
+            timestamp += frame_interval
+            idle_state.timestamp = timestamp
+
+            commands = self._engine.generate(idle_state)
+            with contextlib.suppress(asyncio.QueueFull):
+                self._server.state_queue.put_nowait((idle_state, commands))
+
+            await asyncio.sleep(frame_interval)
+
     async def _handle_transport(self) -> None:
         """Process transport commands from WebSocket clients."""
         fps = self._config.fps
@@ -415,6 +528,11 @@ class LuminaApp:
                     self._frame_index = max(0, self._frame_index)
                     logger.info("Transport: seek to %.1fs (frame %d)", position, self._frame_index)
 
+            elif action == "pattern_override":
+                pattern = msg.get("pattern")
+                if isinstance(pattern, str) or pattern is None:
+                    self._engine.set_pattern_override(pattern if isinstance(pattern, str) else None)
+
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
     """Parse CLI arguments into AppConfig.
@@ -431,9 +549,9 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     )
     parser.add_argument(
         "--mode",
-        choices=["file", "live"],
+        choices=["file", "live", "showcase"],
         default="file",
-        help="Operating mode (default: file)",
+        help="Operating mode (default: file). 'showcase' starts the server immediately for pattern testing with no audio analysis.",
     )
     parser.add_argument(
         "--file",

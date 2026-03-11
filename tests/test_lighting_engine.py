@@ -27,6 +27,14 @@ class TestEngineInit:
         engine = LightingEngine()
         assert "rage_trap" in engine.profile_names
 
+    def test_all_eight_profiles_registered(self) -> None:
+        engine = LightingEngine()
+        expected = {
+            "rage_trap", "psych_rnb", "festival_edm", "generic",
+            "french_melodic", "french_hard", "euro_alt", "theatrical",
+        }
+        assert expected == set(engine.profile_names)
+
 
 class TestProfileSelection:
     def test_selects_rage_trap_by_weight(self) -> None:
@@ -49,10 +57,49 @@ class TestProfileSelection:
 
     def test_selects_highest_registered_weight(self) -> None:
         engine = LightingEngine()
-        # psych_rnb not registered yet, so rage_trap should win
         state = _state(genre_weights={"psych_rnb": 0.6, "rage_trap": 0.4})
         cmds = engine.generate(state)
         assert len(cmds) == 15
+
+    def test_selects_french_melodic(self) -> None:
+        engine = LightingEngine()
+        state = _state(genre_weights={"french_melodic": 0.8})
+        cmds = engine.generate(state)
+        assert len(cmds) == 15
+
+    def test_selects_french_hard(self) -> None:
+        engine = LightingEngine()
+        state = _state(genre_weights={"french_hard": 0.7})
+        cmds = engine.generate(state)
+        assert len(cmds) == 15
+
+    def test_selects_euro_alt(self) -> None:
+        engine = LightingEngine()
+        state = _state(genre_weights={"euro_alt": 0.6})
+        cmds = engine.generate(state)
+        assert len(cmds) == 15
+
+    def test_selects_theatrical(self) -> None:
+        engine = LightingEngine()
+        state = _state(genre_weights={"theatrical": 0.9})
+        cmds = engine.generate(state)
+        assert len(cmds) == 15
+
+    def test_all_profiles_produce_valid_output(self) -> None:
+        """Every registered profile produces 15 valid commands."""
+        engine = LightingEngine()
+        for profile_name in engine.profile_names:
+            state = _state(
+                genre_weights={profile_name: 1.0},
+                segment="verse",
+                energy=0.5,
+            )
+            cmds = engine.generate(state)
+            assert len(cmds) == 15, f"{profile_name} produced {len(cmds)} commands"
+            for c in cmds:
+                assert 0 <= c.red <= 255
+                assert 0 <= c.green <= 255
+                assert 0 <= c.blue <= 255
 
 
 class TestOutputStructure:

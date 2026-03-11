@@ -7,6 +7,7 @@ export interface AudioHandle {
   currentTime: number;
   waveformData: Float32Array;
   loadFile: (file: File) => Promise<{ filename: string; duration: number }>;
+  loadUrl: (url: string) => Promise<{ filename: string; duration: number }>;
   play: () => void;
   pause: () => void;
   seek: (time: number) => void;
@@ -85,35 +86,90 @@ export function useAudio(): AudioHandle {
     [getContext, stopSource],
   );
 
+  const loadUrl = useCallback(
+    async (url: string): Promise<{ filename: string; duration: number }> => {
+      console.log("[LUMINA audio] loadUrl called:", url);
+      const ctx = getContext();
+      stopSource();
+
+      console.log("[LUMINA audio] fetching audio file...");
+      let response: Response;
+      try {
+        response = await fetch(url);
+      } catch (err) {
+        console.error("[LUMINA audio] fetch failed:", err);
+        throw err;
+      }
+      if (!response.ok) {
+        console.error("[LUMINA audio] fetch HTTP error:", response.status, response.statusText);
+        throw new Error(`HTTP ${response.status}`);
+      }
+      console.log("[LUMINA audio] fetch ok, decoding audio...");
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      bufferRef.current = audioBuffer;
+      setDuration(audioBuffer.duration);
+      setCurrentTime(0);
+      setLoaded(true);
+      setPlaying(false);
+      offsetRef.current = 0;
+
+      console.log("[LUMINA audio] loadUrl complete, duration:", audioBuffer.duration);
+      return { filename: "audio", duration: audioBuffer.duration };
+    },
+    [getContext, stopSource],
+  );
+
   const play = useCallback(() => {
     const ctx = getContext();
     const buffer = bufferRef.current;
-    if (!buffer || !analyserRef.current) return;
+    console.log("[LUMINA audio] play() called — ctx.state:", ctx.state, "buffer:", !!buffer);
+    if (!buffer || !analyserRef.current) {
+      console.warn("[LUMINA audio] play() aborted — buffer or analyser missing");
+      return;
+    }
 
-    stopSource();
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(analyserRef.current);
-    source.start(0, offsetRef.current);
-    sourceRef.current = source;
-    startTimeRef.current = ctx.currentTime;
-    setPlaying(true);
+    const startSource = () => {
+      stopSource();
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(analyserRef.current!);
+      source.start(0, offsetRef.current);
+      sourceRef.current = source;
+      startTimeRef.current = ctx.currentTime;
+      setPlaying(true);
+      console.log("[LUMINA audio] source started at offset:", offsetRef.current, "ctx.state:", ctx.state);
 
-    source.onended = () => {
-      setPlaying(false);
-      offsetRef.current = 0;
-      setCurrentTime(0);
-    };
+      source.onended = () => {
+        setPlaying(false);
+        offsetRef.current = 0;
+        setCurrentTime(0);
+      };
 
-    const tick = () => {
-      const elapsed = ctx.currentTime - startTimeRef.current + offsetRef.current;
-      setCurrentTime(Math.min(elapsed, buffer.duration));
-      if (analyserRef.current) {
-        analyserRef.current.getFloatFrequencyData(waveformRef.current);
-      }
+      const tick = () => {
+        const elapsed = ctx.currentTime - startTimeRef.current + offsetRef.current;
+        setCurrentTime(Math.min(elapsed, buffer.duration));
+        if (analyserRef.current) {
+          analyserRef.current.getFloatFrequencyData(waveformRef.current);
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
       rafRef.current = requestAnimationFrame(tick);
     };
-    rafRef.current = requestAnimationFrame(tick);
+
+    // Resume AudioContext if suspended (required by browser autoplay policy).
+    // Must await before calling source.start() — starting on a suspended context is a no-op.
+    if (ctx.state === "suspended") {
+      console.warn("[LUMINA audio] AudioContext suspended — resuming before play...");
+      ctx.resume()
+        .then(() => {
+          console.log("[LUMINA audio] AudioContext resumed (state now:", ctx.state, ")");
+          startSource();
+        })
+        .catch((err) => console.error("[LUMINA audio] resume() failed:", err));
+    } else {
+      startSource();
+    }
   }, [getContext, stopSource]);
 
   const pause = useCallback(() => {
@@ -142,6 +198,7 @@ export function useAudio(): AudioHandle {
     currentTime,
     waveformData: waveformRef.current,
     loadFile,
+    loadUrl,
     play,
     pause,
     seek,
