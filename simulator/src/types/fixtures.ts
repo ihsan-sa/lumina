@@ -27,6 +27,13 @@ export interface MusicState {
   sub_bass_energy: number;
   onset_type: string | null;
   drop_probability: number;
+  layer_count: number;
+  layer_mask: Record<string, number>;
+  motif_id: number | null;
+  motif_repetition: number;
+  notes_per_beat: number;
+  note_pattern_phase: number;
+  headroom: number;
 }
 
 /** Fixture types matching the backend FixtureType enum values. */

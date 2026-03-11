@@ -302,6 +302,15 @@ class LuminaServer:
                         "sub_bass_energy": music_state.sub_bass_energy,
                         "onset_type": music_state.onset_type,
                         "drop_probability": music_state.drop_probability,
+                        "layer_count": music_state.layer_count,
+                        "layer_mask": dict(music_state.layer_mask)
+                        if music_state.layer_mask
+                        else {},
+                        "motif_id": music_state.motif_id,
+                        "motif_repetition": music_state.motif_repetition,
+                        "notes_per_beat": music_state.notes_per_beat,
+                        "note_pattern_phase": music_state.note_pattern_phase,
+                        "headroom": music_state.headroom,
                     },
                 },
                 cls=_NumpyEncoder,
