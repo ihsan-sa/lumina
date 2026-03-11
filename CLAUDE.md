@@ -525,6 +525,11 @@ The fixture control protocol and software abstractions in the Python host are MC
 7. **Extensible genre profiles.** Adding a new genre requires only: (a) a new profile class inheriting from `BaseProfile`, (b) labeled training examples, (c) optional simulator reference recordings. No architectural changes.
 8. **Cross-platform: Windows → Linux/ARM.** Code develops on Windows x86_64 and deploys to Linux aarch64 (Jetson). Use `pathlib.Path` for all file paths (no hardcoded `/` or `\`). Avoid x86-specific or Windows-specific packages in the core logic. Audio capture is platform-specific and abstracted behind a common interface.
 
+
+---
+## Documentation and flow
+- I want you to always document your work in a DOCS.md file in the root of the project. When you are familiarizing yourself with the codebase, read that. This should have all major design decisions and current bugs and be essentially for agent-agent communication and to transfer technical context.
+- Commit all changes you make to git.
 ---
 
 ## What NOT To Do
