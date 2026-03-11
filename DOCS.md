@@ -4,6 +4,119 @@ Last updated: 2026-03-11
 
 ---
 
+## 0. Quick-Start Runbook (Read This First)
+
+### How to run the ML training pipeline
+
+```bash
+# 1. Install deps (from repo root, venv activated)
+pip install -e ".[dev,ml_training]"
+
+# 2. Training (data must exist in data/features/aligned/*.parquet)
+python -m lumina.ml.model.train
+
+# 3. Resume after stopping (Ctrl+C, lid close, etc.)
+python -m lumina.ml.model.train --resume
+
+# 4. Custom settings
+python -m lumina.ml.model.train --resume --epochs 100 --batch-size 64 --lr 3e-4 --wandb
+```
+
+**Graceful shutdown**: Ctrl+C or SIGTERM finishes current batch, saves checkpoint, exits. Re-run with `--resume` to continue. Second Ctrl+C force-exits.
+
+### Where everything lives
+
+| What | Path |
+|------|------|
+| Aligned training data (Parquet) | `data/features/aligned/*.parquet` |
+| Audio-only features | `data/features/audio/*.parquet` |
+| Video lighting features | `data/features/lighting/*.parquet` |
+| Downloaded videos | `data/videos/raw/{genre}/{video_id}/` |
+| Video catalog | `data/videos/metadata/catalog.json` |
+| Training checkpoints | `data/models/checkpoints/` |
+| Latest checkpoint (for resume) | `data/models/checkpoints/latest_checkpoint.pt` |
+| Best model (for inference) | `data/models/checkpoints/best_model.pt` |
+
+### GPU
+
+Training runs on CUDA (RTX 4070 on dev, Jetson on prod). Model is ~400K params — trains in minutes per epoch. PyTorch auto-detects GPU; logged at startup.
+
+### Current ML Pipeline Implementation Status
+
+| Module | File | Status |
+|--------|------|--------|
+| **Audio analysis** | | |
+| BeatDetector | `lumina/audio/beat_detector.py` | COMPLETE — `analyze_offline()` works |
+| EnergyTracker | `lumina/audio/energy_tracker.py` | COMPLETE — `analyze_offline()` works |
+| OnsetDetector | `lumina/audio/onset_detector.py` | COMPLETE — `analyze_offline()` works |
+| VocalDetector | `lumina/audio/vocal_detector.py` | COMPLETE — `analyze_offline()` works |
+| SegmentClassifier | `lumina/audio/segment_classifier.py` | COMPLETE — `classify_offline()` works |
+| GenreClassifier | `lumina/audio/genre_classifier.py` | COMPLETE — `classify_offline()` works |
+| DropPredictor | `lumina/audio/drop_predictor.py` | COMPLETE — `process_frame()` works |
+| MusicState | `lumina/audio/models.py` | COMPLETE — 22 fields, but only 15 populated by analyzers |
+| **Batch audio analysis** | | |
+| BatchAnalyzer | `lumina/ml/audio/batch_analyzer.py` | COMPLETE — `analyze_and_save()`, `batch_analyze()` |
+| **Video analysis** | | |
+| SceneClassifier | `lumina/ml/video/scene_classifier.py` | COMPLETE — CLIP zero-shot classification |
+| LightingExtractor | `lumina/ml/video/lighting_extractor.py` | COMPLETE — per-frame HSV/spatial features |
+| CutDetector | `lumina/ml/video/cut_detector.py` | COMPLETE — frame-diff cut detection |
+| **Data pipeline** | | |
+| Aligner | `lumina/ml/data/aligner.py` | COMPLETE — `align_from_parquet()`, `save_aligned()` |
+| Downloader | `lumina/ml/data/downloader.py` | COMPLETE — yt-dlp wrapper |
+| Catalog | `lumina/ml/data/catalog.py` | COMPLETE — video catalog management |
+| **Model** | | |
+| Architecture | `lumina/ml/model/architecture.py` | COMPLETE — LightingTransformer, ~400K params, NUM_MUSIC_FEATURES=11 |
+| Dataset | `lumina/ml/model/dataset.py` | COMPLETE — 11 music features, 6 color + 5 spatial + 3 effect targets |
+| Training | `lumina/ml/model/train.py` | COMPLETE — resume, graceful shutdown, per-epoch checkpoints |
+| Inference | `lumina/ml/model/inference.py` | COMPLETE — sliding window, 10fps→60fps upsampling |
+| **Integration** | | |
+| HybridEngine | `lumina/ml/integration/hybrid_engine.py` | COMPLETE — blends ML + rule-based output |
+| IntentMapper | `lumina/ml/integration/intent_mapper.py` | COMPLETE — LightingIntent → FixtureCommand |
+
+### Key Data Contracts (ML Pipeline)
+
+**MUSIC_FEATURE_COLS** (11 features, order matters — must match architecture.py):
+```
+energy, beat_phase, bar_phase, spectral_centroid, sub_bass_energy,
+vocal_energy, drop_probability, is_beat, is_downbeat, energy_derivative, bpm
+```
+
+**5 MusicState fields NOT used by ML** (no analyzers compute them yet):
+```
+layer_count, notes_per_beat, note_pattern_phase, headroom, motif_repetition
+```
+These exist in `lumina/audio/models.py` with defaults (0 / 1.0) but are excluded from `MUSIC_FEATURE_COLS`, `NUM_MUSIC_FEATURES`, and `_extract_features()` in inference.py. Re-add them when the analyzers are built.
+
+**Lighting targets** (14 total across 3 heads):
+- Color (6): dominant_hue, dominant_saturation, secondary_hue, color_diversity, color_temperature, overall_brightness
+- Spatial (5): left_brightness, center_brightness, right_brightness, spatial_symmetry, brightness_variance
+- Effect (3): is_strobe, is_blackout, brightness_delta
+
+**Checkpoint format** (saved by train.py):
+```python
+{
+    "epoch": int,
+    "model_state_dict": dict,
+    "optimizer_state_dict": dict,
+    "scheduler_state_dict": dict,  # CosineAnnealingLR state
+    "val_loss": float,
+    "best_val_loss": float,
+}
+```
+
+### End-to-End Pipeline Steps (to get from zero to trained model)
+
+1. **Collect videos**: Use `lumina/ml/data/downloader.py` to download concert footage via yt-dlp
+2. **Catalog**: Tag genre, quality, camera type in `data/videos/metadata/catalog.json`
+3. **Extract audio features**: `lumina/ml/audio/batch_analyzer.py` → `data/features/audio/*.parquet`
+4. **Extract video features**: `lumina/ml/video/lighting_extractor.py` + `scene_classifier.py` + `cut_detector.py` → `data/features/lighting/*.parquet`
+5. **Align**: `lumina/ml/data/aligner.py` → `data/features/aligned/*.parquet`
+6. **Train**: `python -m lumina.ml.model.train --resume`
+7. **Inference**: `LightingInferenceEngine.from_checkpoint("data/models/checkpoints/best_model.pt")`
+8. **Integration**: `HybridLightingEngine` blends ML predictions with rule-based profiles
+
+---
+
 ## 1. Codebase Review — Critical Findings
 
 ### 1.1 Unhandled WebSocket Messages (CRITICAL)
