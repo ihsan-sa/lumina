@@ -620,13 +620,13 @@ lumina/
 
 | ID | Severity | Description | File | Status |
 |---|---|---|---|---|
-| B1 | Critical | `genre_override`, `intensity`, `manual_effect` WebSocket messages not handled | `lumina/app.py` | Open |
-| B2 | High | `uk_bass` profile not implemented — falls back to generic | `lumina/lighting/profiles/` | Open |
-| B3 | Medium | Mode radio buttons have no onChange handler | `simulator/ControlPanel.tsx` | Open |
-| B4 | Low | `asyncio.get_event_loop()` deprecated in Python 3.12+ | `lumina/app.py:189` | Open |
-| B5 | Low | New MusicState fields not sent over WebSocket | `lumina/web/server.py` | Open |
+| B1 | Critical | `genre_override`, `intensity`, `manual_effect` WebSocket messages not handled | `lumina/app.py` | **Fixed** — added handlers for all 4 message types + `_apply_effects()` + `_generate_manual_effect()` |
+| B2 | High | `uk_bass` profile not implemented — falls back to generic | `lumina/lighting/profiles/` | **Fixed** — `uk_bass.py` created, registered in `engine.py` |
+| B3 | Medium | Mode radio buttons have no onChange handler | `simulator/ControlPanel.tsx` | **Fixed** — added onChange handlers that send transport messages |
+| B4 | Low | `asyncio.get_event_loop()` deprecated in Python 3.12+ | `lumina/app.py:189` | **Fixed** — changed to `asyncio.get_running_loop()` |
+| B5 | Low | New MusicState fields not sent over WebSocket | `lumina/web/server.py` | **Fixed** — added layer_count, layer_mask, motif_id, motif_repetition, notes_per_beat, note_pattern_phase, headroom to both server.py and fixtures.ts |
 | B6 | Info | No profile blending — single profile selection only | `lumina/lighting/engine.py` | By design (Phase 2) |
-| B7 | Info | `docs/`, `scripts/`, `firmware/` directories don't exist yet | Root | Phase 1 gap |
+| B7 | Info | `docs/`, `scripts/`, `firmware/` directories don't exist yet | Root | **Fixed** — created docs/ and scripts/ with all referenced files |
 
 ---
 

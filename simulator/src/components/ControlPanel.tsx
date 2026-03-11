@@ -176,11 +176,24 @@ export function ControlPanel({ connected, musicState, audio, sendMessage }: Cont
         <h3 className="text-xs font-semibold text-gray-500 uppercase mb-1">Mode</h3>
         <div className="flex gap-2">
           <label className="flex items-center gap-1 text-xs">
-            <input type="radio" name="mode" value="A" defaultChecked className="accent-indigo-500" />
+            <input
+              type="radio"
+              name="mode"
+              value="A"
+              defaultChecked
+              className="accent-indigo-500"
+              onChange={() => sendMessage({ type: "transport", action: "play" })}
+            />
             Live (A)
           </label>
           <label className="flex items-center gap-1 text-xs">
-            <input type="radio" name="mode" value="C" className="accent-indigo-500" />
+            <input
+              type="radio"
+              name="mode"
+              value="C"
+              className="accent-indigo-500"
+              onChange={() => sendMessage({ type: "transport", action: "play" })}
+            />
             Queue (C)
           </label>
           <label className="flex items-center gap-1 text-xs text-gray-600">

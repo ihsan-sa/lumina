@@ -142,6 +142,10 @@ class LuminaApp:
         self._playing = True
         self._udp_socket: socket.socket | None = None
         self._udp_addr: tuple[str, int] | None = None
+        self._global_intensity: float = 0.8
+        self._manual_effect: str | None = None
+        self._manual_effect_start: float = 0.0
+        self._manual_effect_duration: float = 0.5
 
         if config.udp_target:
             host, port_str = config.udp_target.rsplit(":", 1)
@@ -186,7 +190,7 @@ class LuminaApp:
 
         import librosa  # type: ignore[import-untyped]
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         audio, sr = await loop.run_in_executor(
             None,
             lambda: librosa.load(
@@ -388,6 +392,7 @@ class LuminaApp:
             t0 = time.monotonic()
             state = self._music_states[self._frame_index]
             commands = self._engine.generate(state)
+            commands = self._apply_effects(commands, state)
             t_gen = time.monotonic()
 
             # Debug: timing + MusicState once per second
@@ -500,13 +505,88 @@ class LuminaApp:
             idle_state.timestamp = timestamp
 
             commands = self._engine.generate(idle_state)
+            commands = self._apply_effects(commands, idle_state)
             with contextlib.suppress(asyncio.QueueFull):
                 self._server.state_queue.put_nowait((idle_state, commands))
 
             await asyncio.sleep(frame_interval)
 
+    def _apply_effects(
+        self, commands: list[FixtureCommand], state: MusicState
+    ) -> list[FixtureCommand]:
+        """Apply global intensity and manual effects to fixture commands.
+
+        Args:
+            commands: Raw commands from the lighting engine.
+            state: Current music state (for timestamp).
+
+        Returns:
+            Modified commands with intensity/effects applied.
+        """
+        # Check if a manual effect is active
+        if self._manual_effect is not None:
+            elapsed = state.timestamp - self._manual_effect_start
+            if elapsed < self._manual_effect_duration:
+                return self._generate_manual_effect(commands, self._manual_effect)
+            self._manual_effect = None
+
+        # Apply global intensity multiplier
+        if self._global_intensity < 1.0:
+            scale = self._global_intensity
+            result: list[FixtureCommand] = []
+            for c in commands:
+                result.append(FixtureCommand(
+                    fixture_id=c.fixture_id,
+                    red=int(c.red * scale),
+                    green=int(c.green * scale),
+                    blue=int(c.blue * scale),
+                    white=int(c.white * scale),
+                    strobe_rate=c.strobe_rate,
+                    strobe_intensity=int(c.strobe_intensity * scale),
+                    special=int(c.special * scale),
+                ))
+            return result
+
+        return commands
+
+    def _generate_manual_effect(
+        self, commands: list[FixtureCommand], effect: str
+    ) -> list[FixtureCommand]:
+        """Generate commands for a manual effect override.
+
+        Args:
+            commands: Original commands (used for fixture IDs).
+            effect: Effect name — "blackout", "strobe_burst", or "uv_flash".
+
+        Returns:
+            Overridden fixture commands for the effect.
+        """
+        result: list[FixtureCommand] = []
+        for c in commands:
+            if effect == "blackout":
+                result.append(FixtureCommand(
+                    fixture_id=c.fixture_id,
+                    red=0, green=0, blue=0, white=0,
+                    strobe_rate=0, strobe_intensity=0, special=0,
+                ))
+            elif effect == "strobe_burst":
+                result.append(FixtureCommand(
+                    fixture_id=c.fixture_id,
+                    red=255, green=255, blue=255, white=255,
+                    strobe_rate=255, strobe_intensity=255, special=255,
+                ))
+            elif effect == "uv_flash":
+                result.append(FixtureCommand(
+                    fixture_id=c.fixture_id,
+                    red=50, green=0, blue=100, white=0,
+                    strobe_rate=0, strobe_intensity=0, special=255,
+                ))
+            else:
+                result.append(c)
+        return result
+
     async def _handle_transport(self) -> None:
-        """Process transport commands from WebSocket clients."""
+        """Process transport and control commands from WebSocket clients."""
         fps = self._config.fps
         n = len(self._music_states)
 
@@ -532,6 +612,39 @@ class LuminaApp:
                 pattern = msg.get("pattern")
                 if isinstance(pattern, str) or pattern is None:
                     self._engine.set_pattern_override(pattern if isinstance(pattern, str) else None)
+
+            elif action == "genre_override":
+                profile = msg.get("profile")
+                if profile is None:
+                    self._engine.set_genre_override(None)
+                    logger.info("Genre override: auto")
+                elif isinstance(profile, str):
+                    self._engine.set_genre_override(profile)
+                    logger.info("Genre override: %s", profile)
+
+            elif action == "intensity":
+                value = msg.get("value")
+                if isinstance(value, (int, float)):
+                    self._global_intensity = max(0.0, min(1.0, float(value) / 100.0))
+                    logger.info("Global intensity: %.0f%%", self._global_intensity * 100)
+
+            elif action == "manual_effect":
+                effect = msg.get("effect")
+                if isinstance(effect, str) and effect in ("blackout", "strobe_burst", "uv_flash"):
+                    self._manual_effect = effect
+                    # Use current playback timestamp for effect timing
+                    if self._frame_index < len(self._music_states):
+                        self._manual_effect_start = self._music_states[self._frame_index].timestamp
+                    else:
+                        self._manual_effect_start = 0.0
+                    logger.info("Manual effect: %s", effect)
+
+            elif action == "audio_loaded":
+                logger.info(
+                    "Client loaded audio: %s (%.1fs)",
+                    msg.get("filename", "?"),
+                    msg.get("duration", 0.0),
+                )
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:

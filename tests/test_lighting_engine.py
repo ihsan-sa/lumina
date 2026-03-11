@@ -27,11 +27,12 @@ class TestEngineInit:
         engine = LightingEngine()
         assert "rage_trap" in engine.profile_names
 
-    def test_all_eight_profiles_registered(self) -> None:
+    def test_all_nine_profiles_registered(self) -> None:
         engine = LightingEngine()
         expected = {
             "rage_trap", "psych_rnb", "festival_edm", "generic",
             "french_melodic", "french_hard", "euro_alt", "theatrical",
+            "uk_bass",
         }
         assert expected == set(engine.profile_names)
 

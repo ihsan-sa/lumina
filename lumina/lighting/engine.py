@@ -32,6 +32,7 @@ from lumina.lighting.profiles.psych_rnb import PsychRnbProfile
 from lumina.lighting.profiles.rage_trap import RageTrapProfile
 from lumina.lighting.patterns import PATTERN_REGISTRY
 from lumina.lighting.profiles.theatrical import TheatricalProfile
+from lumina.lighting.profiles.uk_bass import UkBassProfile
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ _PROFILE_REGISTRY: dict[str, type[BaseProfile]] = {
     "french_hard": FrenchHardProfile,
     "euro_alt": EuroAltProfile,
     "theatrical": TheatricalProfile,
+    "uk_bass": UkBassProfile,
     "generic": GenericProfile,
 }
 
@@ -132,6 +134,7 @@ class LightingEngine:
         self._context = LightingContext()
         self._motif_assignments: dict[int, MotifAssignment] = {}
         self._pattern_override: str | None = None
+        self._genre_override: str | None = None
 
     @property
     def fixture_map(self) -> FixtureMap:
@@ -169,6 +172,21 @@ class LightingEngine:
         self._context.motif_color_map = {
             mid: a.color_index for mid, a in assignments.items()
         }
+
+    def set_genre_override(self, profile: str | None) -> None:
+        """Force a specific genre profile, bypassing classifier output.
+
+        Used by the control UI genre dropdown. Pass None to restore
+        auto-detection from genre_weights.
+
+        Args:
+            profile: Profile name from _PROFILE_REGISTRY, or None to clear.
+        """
+        if profile is not None and profile not in self._profiles:
+            logger.warning("Unknown genre profile: %s (ignoring)", profile)
+            return
+        self._genre_override = profile
+        logger.info("Genre override: %s", profile or "(auto)")
 
     def set_pattern_override(self, name: str | None) -> None:
         """Force a specific pattern for all fixtures, bypassing profile logic.
@@ -322,7 +340,7 @@ class LightingEngine:
         }
 
     def _select_profile(self, state: MusicState) -> BaseProfile:
-        """Pick the active profile based on genre_weights.
+        """Pick the active profile based on genre_weights or override.
 
         Falls back to generic when no registered genre exceeds
         ``_MIN_GENRE_WEIGHT`` (0.3).
@@ -333,6 +351,10 @@ class LightingEngine:
         Returns:
             The selected BaseProfile instance.
         """
+        # Genre override from UI takes priority
+        if self._genre_override is not None and self._genre_override in self._profiles:
+            return self._profiles[self._genre_override]
+
         if not state.genre_weights:
             return self._profiles[self._fallback_profile]
 
