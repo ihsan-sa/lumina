@@ -627,6 +627,10 @@ lumina/
 | B5 | Low | New MusicState fields not sent over WebSocket | `lumina/web/server.py` | **Fixed** — added layer_count, layer_mask, motif_id, motif_repetition, notes_per_beat, note_pattern_phase, headroom to both server.py and fixtures.ts |
 | B6 | Info | No profile blending — single profile selection only | `lumina/lighting/engine.py` | By design (Phase 2) |
 | B7 | Info | `docs/`, `scripts/`, `firmware/` directories don't exist yet | Root | **Fixed** — created docs/ and scripts/ with all referenced files |
+| B8 | Critical | `pandas`, `pyarrow` missing from pyproject.toml — dataset/aligner fail on import | `pyproject.toml` | **Fixed** — added pandas, pyarrow, tqdm to core deps; opencv, transformers, pillow, wandb to `[ml_training]` optional deps |
+| B9 | Critical | Schema mismatch: dataset.py expects 16 MUSIC_FEATURE_COLS but batch_analyzer only computes 11 | `lumina/ml/model/dataset.py`, `architecture.py`, `inference.py` | **Fixed** — removed 5 unimplemented fields (layer_count, notes_per_beat, note_pattern_phase, headroom, motif_repetition) from MUSIC_FEATURE_COLS; updated NUM_MUSIC_FEATURES from 16 to 11 |
+| B10 | High | Training has no resume support — lose all progress on interrupt | `lumina/ml/model/train.py` | **Fixed** — added `--resume` flag, per-epoch checkpoints with `latest_checkpoint.pt`, SIGINT/SIGTERM graceful shutdown |
+| B11 | Medium | save_checkpoint doesn't save scheduler state — LR schedule breaks on resume | `lumina/ml/model/train.py` | **Fixed** — checkpoint now saves scheduler_state_dict and best_val_loss |
 
 ---
 
@@ -641,3 +645,5 @@ lumina/
 | 2026-03-11 | Predict LightingIntent, not FixtureCommand | Video shows overall lighting feel, not per-fixture state. Intent is a better abstraction. |
 | 2026-03-11 | Small transformer (~500K params) | Must run at 60fps on Jetson (8GB). Small model trains fast on limited data. |
 | 2026-03-11 | CLIP for scene classification | Zero-shot, no training needed. Good enough for stage vs crowd vs LED screen. |
+| 2026-03-11 | NUM_MUSIC_FEATURES reduced from 16 to 11 | 5 fields (layer_count, notes_per_beat, note_pattern_phase, headroom, motif_repetition) have no analyzer implementations yet. Will be re-added when analyzers exist. |
+| 2026-03-11 | Per-epoch checkpoints + graceful shutdown | Training must survive laptop lid close, Ctrl+C, WiFi loss. `latest_checkpoint.pt` always has the most recent state. |
