@@ -37,6 +37,9 @@ tests/fixtures/audio/*.flac
 # Firmware build artifacts
 firmware/build/
 
+# ML training data / models (large, generated)
+/data/
+
 # Environment
 .env
 .env.local

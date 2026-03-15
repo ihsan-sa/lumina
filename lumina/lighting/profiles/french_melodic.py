@@ -23,8 +23,6 @@ Lighting language:
 
 from __future__ import annotations
 
-import math
-
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
@@ -47,7 +45,6 @@ from lumina.lighting.profiles.base import (
     Color,
     FixtureInfo,
     energy_brightness,
-    lerp_color,
 )
 
 # ─── French melodic palette ──────────────────────────────────────────
@@ -172,7 +169,6 @@ class FrenchMelodicProfile(BaseProfile):
         """
         self._begin_debug_frame()
         segment = state.segment
-        energy = state.energy
 
         # Track segment transitions
         if segment != self._last_segment:

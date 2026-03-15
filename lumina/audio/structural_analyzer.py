@@ -20,14 +20,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from lumina.analysis.edm_structure import edm_structure_pass
 from lumina.audio.beat_detector import BeatInfo
+from lumina.audio.drop_predictor import DropFrame
 from lumina.audio.energy_tracker import EnergyFrame
 from lumina.audio.onset_detector import OnsetEvent
 from lumina.audio.segment_classifier import SegmentFrame
 from lumina.audio.source_separator import StemSet
 from lumina.audio.vocal_detector import VocalFrame
-from lumina.audio.drop_predictor import DropFrame
-from lumina.analysis.edm_structure import StructuralSegment, edm_structure_pass
 
 logger = logging.getLogger(__name__)
 

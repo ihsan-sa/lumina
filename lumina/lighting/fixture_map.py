@@ -4,7 +4,7 @@ Manages fixture metadata — ID, type, position, role, and group
 memberships — so that lighting profiles can generate spatially-aware
 commands (sweeps, chases, corner isolation, etc.).
 
-Default layout: 15 fixtures in a 5m × 7m × 2.5m room.
+Default layout: 15 fixtures in a 5m x 7m x 2.5m room.
   IDs 1-4:   RGBW Par, left wall (evenly spaced along 7m wall)
   IDs 5-8:   RGBW Par, right wall (mirroring left)
   IDs 9-12:  Strobe, four corners (mounted high)
@@ -265,7 +265,7 @@ class FixtureMap:
 
 
 def _default_fixtures() -> list[FixtureInfo]:
-    """Create the default 15-fixture layout for a 5m×7m×2.5m room.
+    """Create the default 15-fixture layout for a 5m x 7m x 2.5m room.
 
     Layout:
         IDs 1-4:   RGBW Par — left wall, evenly spaced along 7m wall

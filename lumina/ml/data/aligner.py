@@ -15,56 +15,9 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from lumina.ml.video.lighting_extractor import VideoLightingFrame
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class VideoLightingFrame:
-    """Lighting features extracted from a single video frame.
-
-    Follows the schema from DOCS.md Section 3.3.
-
-    Args:
-        timestamp: Frame timestamp in seconds.
-        overall_brightness: 0-1, mean luminance of stage area.
-        brightness_variance: Spatial variance (low = wash, high = spots).
-        dominant_hue: 0-360 degrees.
-        dominant_saturation: 0-1.
-        secondary_hue: 0-360 degrees (if bimodal color distribution).
-        color_temperature: Warm vs cool (mapped from hue).
-        color_diversity: 0-1, how many distinct colors visible.
-        left_brightness: Left third of stage brightness (0-1).
-        center_brightness: Center third of stage brightness (0-1).
-        right_brightness: Right third of stage brightness (0-1).
-        top_brightness: Upper half brightness (0-1).
-        bottom_brightness: Lower half brightness (0-1).
-        spatial_symmetry: 0-1, how symmetric L vs R.
-        brightness_delta: Frame-to-frame brightness change.
-        is_strobe: Rapid brightness oscillation detected.
-        is_blackout: All regions below threshold.
-        color_change_rate: Hue shift speed.
-        scene_confidence: Confidence this is a stage view (0-1).
-    """
-
-    timestamp: float = 0.0
-    overall_brightness: float = 0.0
-    brightness_variance: float = 0.0
-    dominant_hue: float = 0.0
-    dominant_saturation: float = 0.0
-    secondary_hue: float = 0.0
-    color_temperature: float = 0.0
-    color_diversity: float = 0.0
-    left_brightness: float = 0.0
-    center_brightness: float = 0.0
-    right_brightness: float = 0.0
-    top_brightness: float = 0.0
-    bottom_brightness: float = 0.0
-    spatial_symmetry: float = 0.0
-    brightness_delta: float = 0.0
-    is_strobe: bool = False
-    is_blackout: bool = False
-    color_change_rate: float = 0.0
-    scene_confidence: float = 0.0
 
 
 @dataclass(slots=True)

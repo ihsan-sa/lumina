@@ -21,9 +21,6 @@ Lighting language:
 
 from __future__ import annotations
 
-import hashlib
-import math
-
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
@@ -426,7 +423,6 @@ class RageTrapProfile(BaseProfile):
         """
         commands: dict[int, FixtureCommand] = {}
         energy = state.energy
-        headroom = state.headroom
 
         # Time since segment started (reset on each segment transition)
         dt = max(0.0, state.timestamp - self._segment_start_time)

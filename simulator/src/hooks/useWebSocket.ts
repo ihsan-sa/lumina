@@ -39,6 +39,13 @@ const DEFAULT_MUSIC_STATE: MusicState = {
   sub_bass_energy: 0,
   onset_type: null,
   drop_probability: 0,
+  layer_count: 0,
+  layer_mask: {},
+  motif_id: null,
+  motif_repetition: 0,
+  notes_per_beat: 0,
+  note_pattern_phase: 0,
+  headroom: 1.0,
 };
 
 /** Fallback configs from the default 15-fixture layout. */

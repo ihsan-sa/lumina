@@ -238,7 +238,6 @@ class MotifDetector:
         """
         frame_interval = 1.0 / self._fps
         n_output = len(beat_results)
-        duration = n_output * frame_interval
 
         # Compute spectral flux for onset detection on "other" stem
         hop = 512
@@ -285,10 +284,8 @@ class MotifDetector:
                 beat_times.append(i * frame_interval)
 
         # Estimate beat duration
-        if len(beat_times) >= 2:
-            beat_dur = float(np.median(np.diff(beat_times)))
-        else:
-            beat_dur = 0.5  # fallback 120 BPM
+        beat_dur = (float(np.median(np.diff(beat_times)))
+                    if len(beat_times) >= 2 else 0.5)
 
         window_duration = beat_dur * _PATTERN_WINDOW_BEATS
 

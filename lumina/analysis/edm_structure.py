@@ -39,13 +39,18 @@ Expected inputs (from existing pipeline):
   - drop_probability: np.ndarray (optional), per-bar drop probability from predictor
 
 Output:
-  List[StructuralSegment] — labeled segments with bar-aligned boundaries
+  list[StructuralSegment] — labeled segments with bar-aligned boundaries
 """
 
-import numpy as np
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 from enum import Enum
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class EDMSection(Enum):
@@ -255,8 +260,8 @@ def detect_drop_points(
     bar_energy_raw: np.ndarray,
     derivative: np.ndarray,
     config: EDMStructureConfig,
-    drop_probability: Optional[np.ndarray] = None,
-) -> List[int]:
+    drop_probability: np.ndarray | None = None,
+) -> list[int]:
     """
     Detect drop bar indices — moments where energy spikes after a ramp.
 
@@ -326,9 +331,9 @@ def detect_drop_points(
 def classify_bars(
     bar_energy: np.ndarray,
     derivative: np.ndarray,
-    drop_bars: List[int],
+    drop_bars: list[int],
     config: EDMStructureConfig,
-) -> List[str]:
+) -> list[str]:
     """
     Assign a structural label to each bar based on energy level, derivative,
     and detected drop points.
@@ -388,10 +393,10 @@ def classify_bars(
     for i in range(n):
         if labels[i] != "unknown":
             continue
-        if bar_energy[i] >= config.high_energy_threshold:
+        if (bar_energy[i] >= config.high_energy_threshold
+                and derivative[i] < config.build_slope_threshold):
             # Allow slight negative derivative — energy often settles after a drop
-            if derivative[i] < config.build_slope_threshold:
-                labels[i] = "groove"
+            labels[i] = "groove"
 
     # Pass 4: Mark breakdowns (low energy valleys)
     for i in range(n):
@@ -431,11 +436,11 @@ def classify_bars(
         if bar_energy[i] > config.intro_max_energy:
             first_active = i
             break
-        if i >= 2 and derivative[i] > config.build_slope_threshold:
-            # Check that this isn't a one-bar blip
-            if i + 1 < n and derivative[i + 1] > config.build_slope_threshold * 0.5:
-                first_active = i
-                break
+        if (i >= 2 and derivative[i] > config.build_slope_threshold
+                and i + 1 < n
+                and derivative[i + 1] > config.build_slope_threshold * 0.5):
+            first_active = i
+            break
     if first_active >= config.min_intro_bars:
         for i in range(first_active):
             labels[i] = "intro"
@@ -459,12 +464,12 @@ def classify_bars(
 # ---------------------------------------------------------------------------
 
 def merge_bar_labels(
-    bar_labels: List[str],
+    bar_labels: list[str],
     bar_times: np.ndarray,
     bar_energy: np.ndarray,
     derivative: np.ndarray,
     config: EDMStructureConfig,
-) -> List[StructuralSegment]:
+) -> list[StructuralSegment]:
     """
     Merge consecutive bars with the same label into StructuralSegments.
     Apply minimum duration constraints and fix short orphan segments.
@@ -473,7 +478,7 @@ def merge_bar_labels(
         return []
 
     n = len(bar_labels)
-    segments: List[StructuralSegment] = []
+    segments: list[StructuralSegment] = []
 
     # First pass: merge consecutive same-label bars
     seg_start = 0
@@ -509,9 +514,9 @@ def merge_bar_labels(
 
 
 def _absorb_short_segments(
-    segments: List[StructuralSegment],
+    segments: list[StructuralSegment],
     config: EDMStructureConfig,
-) -> List[StructuralSegment]:
+) -> list[StructuralSegment]:
     """
     Absorb segments shorter than their minimum duration into adjacent segments.
     Iterate until stable.
@@ -641,9 +646,9 @@ def edm_structure_pass(
     hop_length: int,
     genre_family: str,
     genre_profile: str = "",
-    drop_probability: Optional[np.ndarray] = None,
-    config: Optional[EDMStructureConfig] = None,
-) -> Optional[List[StructuralSegment]]:
+    drop_probability: np.ndarray | None = None,
+    config: EDMStructureConfig | None = None,
+) -> list[StructuralSegment] | None:
     """
     EDM-specific structural analysis pass.
 
@@ -664,7 +669,7 @@ def edm_structure_pass(
         config: Override config (default uses EDMStructureConfig())
 
     Returns:
-        List[StructuralSegment] if genre_family is "electronic" or "hybrid",
+        list[StructuralSegment] if genre_family is "electronic" or "hybrid",
         None otherwise (signals caller to use default analyzer).
     """
     if genre_family not in ("electronic", "hybrid"):
@@ -711,33 +716,36 @@ def edm_structure_pass(
 #  Utility: Pretty-Print & Debug
 # ---------------------------------------------------------------------------
 
-def print_structure(segments: List[StructuralSegment], title: str = ""):
-    """Print structural analysis results in a readable format."""
+def print_structure(segments: list[StructuralSegment], title: str = "") -> None:
+    """Log structural analysis results in a readable format."""
     if title:
-        print(f"\n{'=' * 60}")
-        print(f"  {title}")
-        print(f"{'=' * 60}")
+        logger.info("=" * 60)
+        logger.info("  %s", title)
+        logger.info("=" * 60)
 
     total_bars = sum(s.bar_count for s in segments)
     total_duration = segments[-1].end_time - segments[0].start_time if segments else 0
 
     for seg in segments:
         bar_pct = seg.bar_count / total_bars * 100 if total_bars > 0 else 0
-        print(f"  {seg}  [{bar_pct:4.1f}%]  conf={seg.confidence:.2f}")
+        logger.info("  %s  [%4.1f%%]  conf=%.2f", seg, bar_pct, seg.confidence)
 
-    print(f"\n  Total: {len(segments)} segments, {total_bars} bars, {total_duration:.1f}s")
+    logger.info("  Total: %d segments, %d bars, %.1fs", len(segments), total_bars, total_duration)
 
     # Section distribution
-    section_bars = {}
+    section_bars: dict[str, int] = {}
     for seg in segments:
         section_bars[seg.label] = section_bars.get(seg.label, 0) + seg.bar_count
-    print(f"  Distribution: {', '.join(f'{k}={v}' for k, v in sorted(section_bars.items()))}")
+    logger.info(
+        "  Distribution: %s",
+        ", ".join(f"{k}={v}" for k, v in sorted(section_bars.items())),
+    )
 
 
 def structure_to_timeline(
-    segments: List[StructuralSegment],
+    segments: list[StructuralSegment],
     bar_times: np.ndarray,
-) -> List[dict]:
+) -> list[dict]:
     """
     Convert structural segments into a per-bar timeline suitable for
     the lighting engine.
@@ -897,7 +905,7 @@ if __name__ == "__main__":
     print(f"\n  Debug: Detected drop bars: {drop_bars}")
 
     bar_labels = classify_bars(smoothed, derivative, drop_bars, config)
-    print(f"  Debug: Bar labels at drops: ", end="")
+    print("  Debug: Bar labels at drops: ", end="")
     for d_bar in [24, 56]:
         print(f"bar[{d_bar}]={bar_labels[d_bar]}  ", end="")
     print()
@@ -929,6 +937,6 @@ if __name__ == "__main__":
         if missing:
             print(f"\n  WARNING: Missing expected sections: {missing}")
         else:
-            print(f"\n  PASS: All expected section types detected")
+            print("\n  PASS: All expected section types detected")
     else:
         print("ERROR: No segments returned")

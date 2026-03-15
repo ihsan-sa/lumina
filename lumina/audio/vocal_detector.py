@@ -33,7 +33,6 @@ _VOCAL_PRESENCE_BAND = (300.0, 4000.0)  # Overall vocal presence band
 
 # Smoothing defaults
 _DEFAULT_SMOOTHING = 0.7
-_DEFAULT_ONSET_SMOOTHING = 0.5
 
 
 @dataclass(slots=True)
@@ -164,7 +163,7 @@ class VocalDetector:
         # Harmonicity via autocorrelation
         harmonic_ratio = self._harmonic_ratio(window)
 
-        # Combine indicators: vocal band presence × harmonicity
+        # Combine indicators: vocal band presence x harmonicity
         # Both must be present for confident vocal detection
         raw_vocal = vocal_band_ratio * (0.4 + 0.6 * harmonic_ratio)
         raw_vocal = min(1.0, raw_vocal)

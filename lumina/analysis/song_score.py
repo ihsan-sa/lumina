@@ -9,7 +9,7 @@ the active genre profile's preferences.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from lumina.analysis.arc_planner import ArcFrame
 from lumina.analysis.layer_tracker import LayerFrame
@@ -99,7 +99,6 @@ class SongScore:
                 )
 
         # Pre-compute motif lookup: for each frame, which motif is active?
-        frame_interval = 1.0 / self._fps
         motif_at_frame: list[tuple[int | None, int]] = [(None, 0)] * n_frames
 
         for seg in motif_timeline.segments:
@@ -130,10 +129,7 @@ class SongScore:
                 note_phase = 0.0
 
             # Arc data
-            if i < len(arc_frames):
-                headroom = arc_frames[i].headroom
-            else:
-                headroom = 1.0
+            headroom = arc_frames[i].headroom if i < len(arc_frames) else 1.0
 
             # Motif data
             motif_id, motif_rep = motif_at_frame[i]

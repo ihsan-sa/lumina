@@ -22,8 +22,6 @@ Lighting language:
 
 from __future__ import annotations
 
-import math
-
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
@@ -32,7 +30,6 @@ from lumina.lighting.patterns import (
     color_split,
     diverge,
     make_command,
-    select_active_fixtures,
     spotlight_isolate,
     wash_hold,
 )

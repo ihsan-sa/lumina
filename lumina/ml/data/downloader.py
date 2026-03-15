@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lumina.ml.data.catalog import CameraType, CatalogEntry, CatalogManager, LightingVisibility, VenueType
+
 logger = logging.getLogger(__name__)
 
 # Default search queries per genre profile, from DOCS.md Section 3.2.
@@ -54,7 +56,33 @@ GENRE_SEARCH_QUERIES: dict[str, list[str]] = {
     ],
 }
 
+def _find_ffmpeg() -> str | None:
+    """Locate an FFmpeg binary, preferring imageio-ffmpeg's bundled copy.
+
+    yt-dlp requires the binary to be named 'ffmpeg' or 'ffmpeg.exe'. If the
+    imageio-ffmpeg binary has a version-stamped name, a copy named 'ffmpeg.exe'
+    is created alongside it (one-time operation).
+
+    Returns:
+        Path to the directory containing a 'ffmpeg.exe', or None if not found.
+    """
+    try:
+        import shutil
+
+        import imageio_ffmpeg
+
+        exe = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        ffmpeg_std = exe.parent / "ffmpeg.exe"
+        if not ffmpeg_std.exists():
+            shutil.copy2(exe, ffmpeg_std)
+        return str(exe.parent)
+    except Exception:
+        pass
+    return None
+
+
 # yt-dlp download options from DOCS.md Section 3.2.
+_ffmpeg_dir = _find_ffmpeg()
 DEFAULT_YTDLP_OPTS: dict[str, Any] = {
     "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
     "merge_output_format": "mp4",
@@ -67,6 +95,7 @@ DEFAULT_YTDLP_OPTS: dict[str, Any] = {
             "preferredquality": "0",
         },
     ],
+    **({"ffmpeg_location": _ffmpeg_dir} if _ffmpeg_dir else {}),
 }
 
 
@@ -135,6 +164,7 @@ class VideoDownloader:
 
         self._raw_dir = self._data_root / "videos" / "raw"
         self._ytdlp_opts = ytdlp_opts or dict(DEFAULT_YTDLP_OPTS)
+        self._catalog = CatalogManager(self._data_root)
 
     @property
     def data_root(self) -> Path:
@@ -254,6 +284,18 @@ class VideoDownloader:
                 final_video is not None,
                 final_audio is not None,
             )
+
+            # Auto-catalog the downloaded video.
+            if info_path.exists():
+                self._catalog.add_from_info_json(
+                    info_path,
+                    genre_profile=genre_profile,
+                    camera_type=CameraType.UNKNOWN.value,
+                    venue_type=VenueType.UNKNOWN.value,
+                    lighting_visibility=LightingVisibility.MEDIUM.value,
+                )
+                self._catalog.save()
+                logger.info("Cataloged %s under '%s'", video_id, genre_profile)
 
             return DownloadResult(
                 video_id=video_id,
@@ -527,3 +569,64 @@ class VideoDownloader:
             if path.suffix.lower() == suffix.lower() and path.is_file():
                 return path
         return None
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    parser = argparse.ArgumentParser(description="Download concert videos for ML training.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # download <url> --genre <profile>
+    dl_parser = subparsers.add_parser("download", help="Download a single video by URL.")
+    dl_parser.add_argument("url", help="Video URL (YouTube, etc.)")
+    dl_parser.add_argument("--genre", required=True, choices=list(GENRE_SEARCH_QUERIES.keys()), help="Genre profile to file under.")
+
+    # list — show catalog summary
+    subparsers.add_parser("list", help="Show catalog summary (genres, video counts, total hours).")
+
+    # search --genre <profile> [--genre ...] --max-results N
+    search_parser = subparsers.add_parser("search", help="Search and download videos for one or more genres.")
+    search_parser.add_argument("--genre", dest="genres", action="append", choices=list(GENRE_SEARCH_QUERIES.keys()), help="Genre(s) to download. Repeat for multiple. Default: all.")
+    search_parser.add_argument("--max-results", type=int, default=5, help="Max results per search query (default: 5).")
+    search_parser.add_argument("--min-duration", type=int, default=120, help="Minimum video duration in seconds (default: 120).")
+    search_parser.add_argument("--max-duration", type=int, default=7200, help="Maximum video duration in seconds (default: 7200).")
+
+    args = parser.parse_args()
+    downloader = VideoDownloader()
+
+    if args.command == "list":
+        cat = CatalogManager()
+        summary = cat.genre_summary()
+        total_h = cat.total_duration_hours()
+        if not summary:
+            print("Catalog is empty. Run 'search' to download videos.")
+        else:
+            print(f"{'Genre':<20} {'Videos':>7}")
+            print("-" * 30)
+            for genre, count in sorted(summary.items()):
+                print(f"  {genre:<18} {count:>7}")
+            print("-" * 30)
+            print(f"  {'TOTAL':<18} {sum(summary.values()):>7}  ({total_h:.1f}h)")
+
+    if args.command == "download":
+        result = downloader.download_video(args.url, args.genre)
+        if result.success:
+            print(f"Downloaded: {result.video_path}")
+        else:
+            print(f"Failed: {result.error}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.command == "search":
+        results = downloader.download_all_genres(
+            max_results_per_query=args.max_results,
+            min_duration_s=args.min_duration,
+            max_duration_s=args.max_duration,
+            genres=args.genres,
+        )
+        total = sum(len(v) for v in results.values())
+        successful = sum(sum(1 for r in v if r.success) for v in results.values())
+        print(f"\nDone: {successful}/{total} videos downloaded successfully.")

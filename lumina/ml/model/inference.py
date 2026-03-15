@@ -23,15 +23,11 @@ from lumina.audio.models import MusicState
 from lumina.ml.model.architecture import (
     ANALYSIS_FPS,
     CONTEXT_WINDOW,
-    COLOR_HEAD_DIM,
-    EFFECT_HEAD_DIM,
-    SPATIAL_HEAD_DIM,
     LightingIntent,
     LightingTransformer,
     genre_to_index,
     segment_to_index,
 )
-from lumina.ml.model.dataset import MUSIC_FEATURE_COLS
 
 logger = logging.getLogger(__name__)
 

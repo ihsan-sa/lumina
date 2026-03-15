@@ -26,7 +26,7 @@ _downbeat_nn_cache: object | None = None
 
 def _get_beat_nn() -> object:
     """Get or create the cached RNNBeatProcessor."""
-    global _beat_nn_cache  # noqa: PLW0603
+    global _beat_nn_cache
     if _beat_nn_cache is None:
         from madmom.features.beats import RNNBeatProcessor
 
@@ -36,7 +36,7 @@ def _get_beat_nn() -> object:
 
 def _get_downbeat_nn() -> object:
     """Get or create the cached RNNDownBeatProcessor."""
-    global _downbeat_nn_cache  # noqa: PLW0603
+    global _downbeat_nn_cache
     if _downbeat_nn_cache is None:
         from madmom.features.downbeats import RNNDownBeatProcessor
 
@@ -218,7 +218,7 @@ class BeatDetector:
 
         # Build frame → (is_beat, is_downbeat) map from ground truth
         beat_frame_map: dict[int, tuple[bool, bool]] = {}
-        for t_val, pos in zip(beat_times, beat_positions):
+        for t_val, pos in zip(beat_times, beat_positions, strict=True):
             frame = round(float(t_val) * self._fps)
             if 0 <= frame < num_frames:
                 beat_frame_map[frame] = (True, pos == 1)

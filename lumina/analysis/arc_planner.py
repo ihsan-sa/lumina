@@ -76,8 +76,6 @@ class ArcPlanner:
         if not sections:
             return [ArcFrame(headroom=1.0, section_significance=1.0)] * n
 
-        frame_interval = 1.0 / self._fps
-
         # Compute per-section significance
         section_scores: list[float] = []
         for sec in sections:

@@ -127,8 +127,6 @@ export function ControlPanel({ connected, musicState, audio, sendMessage }: Cont
     startIntervalIfNeeded();
   }, [sendMessage, startIntervalIfNeeded]);
 
-  const startShowcase = useCallback(() => jumpToPattern(0), [jumpToPattern]);
-
   useEffect(() => {
     return () => {
       if (showcaseIntervalRef.current !== null) clearInterval(showcaseIntervalRef.current);

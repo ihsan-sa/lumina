@@ -30,7 +30,6 @@ from lumina.lighting.patterns import (
     diverge,
     make_command,
     select_active_fixtures,
-    spotlight_isolate,
     wash_hold,
 )
 from lumina.lighting.profiles.base import (
@@ -40,7 +39,6 @@ from lumina.lighting.profiles.base import (
     Color,
     energy_brightness,
     lerp_color,
-    sine_pulse,
 )
 
 # ─── Psychedelic R&B palette ──────────────────────────────────────

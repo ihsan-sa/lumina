@@ -40,10 +40,8 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     BumpTracker,
     Color,
-    color_from_hsv,
     energy_brightness,
     lerp_color,
-    sine_pulse,
 )
 
 # ─── Festival palette ────────────────────────────────────────────────
@@ -189,7 +187,9 @@ class FestivalEdmProfile(BaseProfile):
             for fid, cmd in converge_cmds.items():
                 if fid in commands:
                     existing = commands[fid]
-                    if cmd.red + cmd.green + cmd.blue > existing.red + existing.green + existing.blue:
+                    cmd_sum = cmd.red + cmd.green + cmd.blue
+                    ex_sum = existing.red + existing.green + existing.blue
+                    if cmd_sum > ex_sum:
                         commands[fid] = cmd
                 else:
                     commands[fid] = cmd

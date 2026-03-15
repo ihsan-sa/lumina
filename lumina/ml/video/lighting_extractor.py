@@ -365,8 +365,8 @@ def extract_lighting_sequence(
     prev_frame: np.ndarray | None = None
     prev_hue: float | None = None
 
-    for i, (frame, ts, conf) in enumerate(
-        zip(frames, timestamps, scene_confidences)
+    for _i, (frame, ts, conf) in enumerate(
+        zip(frames, timestamps, scene_confidences, strict=True)
     ):
         lighting = extract_lighting(
             frame=frame,

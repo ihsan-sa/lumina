@@ -1,12 +1,63 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useRef, useState } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import { Room } from "./components/Room";
 import { Fixture } from "./components/Fixture";
 import { ControlPanel } from "./components/ControlPanel";
 import { useWebSocket, BACKEND_BASE_URL } from "./hooks/useWebSocket";
 import { useAudio } from "./hooks/useAudio";
 import type { FixtureCommand, MusicState } from "./types/fixtures";
+
+// ── Error boundary for Three.js Canvas ──────────────────────────
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class CanvasErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("[LUMINA] 3D renderer crashed:", error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div className="flex items-center justify-center h-full bg-gray-900 text-gray-300">
+          <div className="text-center p-6">
+            <p className="text-lg font-semibold text-red-400 mb-2">
+              3D Renderer Error
+            </p>
+            <p className="text-sm text-gray-400 mb-4">
+              {this.state.error?.message || "An unknown error occurred"}
+            </p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="px-4 py-2 text-sm rounded border border-gray-600 hover:bg-gray-800 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ── Test mode types ───────────────────────────────────────────────
 
@@ -199,12 +250,15 @@ export default function App() {
     return () => clearInterval(id);
   }, [audio, playbackInfoRef, sendMessage]);
 
-  // Drift correction: every 2 seconds, sync audio to backend if drift > 0.3s
+  // Track latest backend timestamp for drift correction
   useEffect(() => {
     if (musicState) {
       lastMusicStateTimestamp.current = musicState.timestamp;
     }
+  }, [musicState]);
 
+  // Drift correction: every 2 seconds, sync audio to backend if drift > 0.3s
+  useEffect(() => {
     const interval = setInterval(() => {
       if (!audio.loaded || !audio.playing) return;
       const drift = Math.abs(audio.currentTime - lastMusicStateTimestamp.current);
@@ -213,7 +267,7 @@ export default function App() {
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [audio, musicState]);
+  }, [audio]);
 
   const isTestRunning = testPhase !== "idle";
 
@@ -221,16 +275,18 @@ export default function App() {
     <div className="flex h-screen w-screen">
       {/* 3D viewport */}
       <div className="flex-1 relative">
-        <Canvas
-          camera={{ position: [0, 2, 6], fov: 60, near: 0.1, far: 50 }}
-          gl={{ antialias: true, toneMapping: 3 /* ACESFilmic */ }}
-        >
-          <Room ambient={roomLights ? 0.3 : 0.02} />
-          {fixtures.map((fc) => (
-            <Fixture key={fc.id} config={fc} commandsRef={commandsRef} />
-          ))}
-          <OrbitControls target={[0, 1.2, 0]} maxPolarAngle={Math.PI * 0.85} />
-        </Canvas>
+        <CanvasErrorBoundary>
+          <Canvas
+            camera={{ position: [0, 2, 6], fov: 60, near: 0.1, far: 50 }}
+            gl={{ antialias: true, toneMapping: 3 /* ACESFilmic */ }}
+          >
+            <Room ambient={roomLights ? 0.3 : 0.02} />
+            {fixtures.map((fc) => (
+              <Fixture key={fc.id} config={fc} commandsRef={commandsRef} />
+            ))}
+            <OrbitControls target={[0, 1.2, 0]} maxPolarAngle={Math.PI * 0.85} />
+          </Canvas>
+        </CanvasErrorBoundary>
 
         {/* Top-right overlay: Room Lights + Test All */}
         <div className="absolute top-3 right-3 flex flex-col items-end gap-2">

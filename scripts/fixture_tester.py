@@ -16,13 +16,16 @@ import struct
 import sys
 import time
 
+from lumina.control.protocol import (
+    PROTOCOL_MAGIC as MAGIC,
+    PROTOCOL_PORT as DEFAULT_PORT,
+    PROTOCOL_VERSION as VERSION,
+    PacketType,
+)
+
 logger = logging.getLogger(__name__)
 
-# Protocol constants (must match lumina/control/protocol.py)
-MAGIC = 0x4C55
-VERSION = 1
-PACKET_TYPE_COMMAND = 0x01
-DEFAULT_PORT = 5150
+PACKET_TYPE_COMMAND = int(PacketType.COMMAND)
 
 
 def build_command_packet(

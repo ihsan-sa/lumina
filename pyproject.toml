@@ -6,8 +6,6 @@ requires-python = ">=3.11"
 dependencies = [
     # Audio analysis
     "librosa>=0.10",
-    "madmom>=0.16",
-    "essentia>=2.1b6",
     "aubio>=0.4",
     "sounddevice>=0.4",
     "numpy>=1.26",
@@ -24,28 +22,36 @@ dependencies = [
     "starlette>=0.36",
     "uvicorn>=0.27",
 
-    # Data processing
-    "pandas>=2.0",
-    "pyarrow>=12.0",
-
     # Utilities
     "pydantic>=2.5",
-    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
+audio_full = [
+    # madmom requires Cython + a C compiler and has no Python 3.11+ wheels.
+    # Install manually if needed: pip install cython && pip install madmom --no-build-isolation
+    "madmom>=0.16",
+    # essentia has no Windows wheels — install from conda-forge or skip on Windows dev
+    "essentia>=2.1b6",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.3",
     "mypy>=1.8",
     "pre-commit>=3.6",
+    "httpx>=0.27",
 ]
 ml_training = [
     "opencv-python>=4.8",
     "transformers>=4.30",
     "pillow>=10.0",
     "wandb>=0.16",
+    "yt-dlp>=2024.1",
+    "imageio-ffmpeg>=0.5",
+    "pandas>=2.0",
+    "pyarrow>=12.0",
+    "tqdm>=4.66",
 ]
 jetson = [
     # Jetson-specific overrides — install PyTorch from NVIDIA wheels, not pip
@@ -56,6 +62,9 @@ jetson = [
 [build-system]
 requires = ["setuptools>=69.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lumina*"]
 
 [tool.ruff]
 target-version = "py311"

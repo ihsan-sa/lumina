@@ -19,10 +19,10 @@ import logging
 
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import (
+    ROOM_WIDTH,
     FixtureInfo,
     FixtureMap,
     FixtureType,
-    ROOM_WIDTH,
 )
 from lumina.ml.model.architecture import LightingIntent
 
@@ -330,10 +330,6 @@ def _generate_laser_command(
         strobe_intensity=0,
         special=pattern,
     )
-
-
-# Dispatch table: fixture type -> command generator.
-_GENERATORS: dict[FixtureType, type] = {}  # Not used; see function below.
 
 
 def _generate_command(

@@ -196,7 +196,7 @@ class HybridLightingEngine:
 
         # Blend per-fixture.
         blended: list[FixtureCommand] = []
-        for rule_cmd, ml_cmd in zip(rule_commands, ml_commands):
+        for rule_cmd, ml_cmd in zip(rule_commands, ml_commands, strict=True):
             blended.append(_blend_commands(rule_cmd, ml_cmd, effective_weight))
 
         return blended

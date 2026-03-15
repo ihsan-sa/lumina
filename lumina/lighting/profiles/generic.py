@@ -38,7 +38,6 @@ from lumina.lighting.profiles.base import (
     Color,
     energy_brightness,
     lerp_color,
-    sine_pulse,
 )
 
 # ─── Generic palette ──────────────────────────────────────────────

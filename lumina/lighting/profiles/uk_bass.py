@@ -23,7 +23,6 @@ Lighting language:
 from __future__ import annotations
 
 import hashlib
-import math
 
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
@@ -46,10 +45,8 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     BumpTracker,
     Color,
-    FixtureInfo,
     energy_brightness,
     lerp_color,
-    sine_pulse,
 )
 
 # ─── UK Bass palette ─────────────────────────────────────────────────
@@ -102,7 +99,7 @@ def _jitter_offset(fixture_id: int, timestamp: float) -> float:
     """
     t_quant = int(timestamp * 8)  # ~125ms quantization (per beat feel)
     seed = f"jitter_{t_quant}_{fixture_id}".encode()
-    h = int(hashlib.md5(seed).hexdigest()[:8], 16)  # noqa: S324
+    h = int(hashlib.md5(seed).hexdigest()[:8], 16)
     normalized = (h & 0xFFFF) / 0xFFFF  # 0.0-1.0
     return (normalized - 0.5) * 2.0 * (_JITTER_MAX_MS / 1000.0)
 

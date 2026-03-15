@@ -31,7 +31,6 @@ from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
 from lumina.lighting.patterns import (
     alternate,
-    blinder,
     breathe,
     chase_mirror,
     make_command,
@@ -46,8 +45,7 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     BumpTracker,
     Color,
-    energy_brightness,
-    lerp_color,
+    FixtureInfo,
 )
 
 # --- Cold palette -----------------------------------------------------------
@@ -120,7 +118,7 @@ class FrenchHardProfile(BaseProfile):
             return intensity
         return intensity * max(0.15, state.headroom)
 
-    def _get_active_pars(self, state: MusicState) -> list:
+    def _get_active_pars(self, state: MusicState) -> list[FixtureInfo]:
         """Get active pars based on layer count or energy.
 
         Args:
@@ -306,7 +304,6 @@ class FrenchHardProfile(BaseProfile):
         All pars active -- wall of light on hooks.
         """
         commands: dict[int, FixtureCommand] = {}
-        energy = state.energy
 
         # Chorus always uses all pars -- wall of light
         chorus_pars = self._pars
@@ -353,13 +350,9 @@ class FrenchHardProfile(BaseProfile):
         LED bars full. Laser active.
         """
         commands: dict[int, FixtureCommand] = {}
-        energy = state.energy
 
         # First 6 frames: BLINDER
         if self._drop_frame_count <= _DROP_BLINDER_FRAMES:
-            blinder_cmds = blinder(
-                self._map.all, state, state.timestamp, ICE_WHITE,
-            )
             commands.update({c.fixture_id: c for c in [
                 make_command(f, ICE_WHITE, intensity=1.0)
                 for f in self._map.all

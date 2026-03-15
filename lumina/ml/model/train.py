@@ -35,12 +35,9 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 from lumina.ml.model.architecture import (
-    COLOR_HEAD_DIM,
-    EFFECT_HEAD_DIM,
-    SPATIAL_HEAD_DIM,
     LightingTransformer,
 )
 from lumina.ml.model.dataset import create_dataloaders
@@ -64,7 +61,7 @@ W_TEMPORAL = 0.1
 # ── Graceful shutdown ────────────────────────────────────────────────
 
 
-class _ShutdownRequested(Exception):
+class _ShutdownRequestedError(Exception):
     """Raised when a signal requests graceful shutdown."""
 
 
@@ -257,7 +254,7 @@ def train_one_epoch(
         # Accumulate losses.
         for key, value in loss_dict.items():
             epoch_losses.setdefault(key, []).append(value)
-        num_batches += 1
+        num_batches += 1  # noqa: SIM113
 
     # Average losses.
     if not epoch_losses:
@@ -506,7 +503,9 @@ def train(
             if "scheduler_state_dict" in checkpoint:
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
-            best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
+            best_val_loss = checkpoint.get(
+                "best_val_loss", checkpoint.get("val_loss", float("inf")),
+            )
             logger.info(
                 "Resumed at epoch %d (best_val_loss=%.4f)",
                 start_epoch,
@@ -633,7 +632,10 @@ def main() -> None:
         default=_DEFAULT_CHECKPOINT_DIR,
         help="Directory to save checkpoints (default: data/models/checkpoints)",
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Total number of epochs (default: 50)")
+    parser.add_argument(
+        "--epochs", type=int, default=50,
+        help="Total number of epochs (default: 50)",
+    )
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb experiment tracking")

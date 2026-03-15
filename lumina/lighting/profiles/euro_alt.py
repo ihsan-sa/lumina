@@ -38,7 +38,6 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     BumpTracker,
     Color,
-    lerp_color,
 )
 
 # --- Euro Alt palette -------------------------------------------------------

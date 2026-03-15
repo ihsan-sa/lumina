@@ -238,7 +238,9 @@ class LuminaServer:
         """Serve the current audio file via HTTP for browser loading."""
         if self._audio_path is None:
             return JSONResponse({"error": "No audio loaded"}, status_code=404)
-        return FileResponse(self._audio_path, media_type="audio/mpeg")
+        import mimetypes
+        mime_type = mimetypes.guess_type(self._audio_path)[0] or "application/octet-stream"
+        return FileResponse(self._audio_path, media_type=mime_type)
 
     # ── Broadcast loop ───────────────────────────────────────────
 
@@ -317,7 +319,7 @@ class LuminaServer:
             )
 
             dead: list[WebSocket] = []
-            for client in self._clients:
+            for client in list(self._clients):
                 try:
                     await client.send_text(commands_msg)
                     await client.send_text(state_msg)
@@ -326,3 +328,6 @@ class LuminaServer:
 
             for client in dead:
                 self._clients.discard(client)
+                with contextlib.suppress(Exception):
+                    await client.close()
+                logger.info("Closed dead client (%d remaining)", len(self._clients))

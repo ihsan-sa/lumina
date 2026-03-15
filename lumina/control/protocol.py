@@ -9,7 +9,7 @@ Packet format (little-endian):
         - timestamp_ms:  2 bytes  (uint16, wraps at 65535 — milliseconds mod 65536)
         - fixture_count: 1 byte   (number of fixture commands, 0-32)
 
-    Payload (fixture_count × 8 bytes each):
+    Payload (fixture_count x 8 bytes each):
         - fixture_id:       1 byte (1-255 unicast, 0 = broadcast)
         - red:              1 byte (0-255)
         - green:            1 byte (0-255)
@@ -19,7 +19,7 @@ Packet format (little-endian):
         - strobe_intensity: 1 byte (0-255)
         - special:          1 byte (fixture-type-specific)
 
-    Max packet size: 9 + 32×8 = 265 bytes.
+    Max packet size: 9 + 32x8 = 265 bytes.
 """
 
 from __future__ import annotations
@@ -221,7 +221,11 @@ def decode_packet(
         msg = f"Packet too short for {count} fixtures: {len(data)} bytes (need {expected_size})"
         raise ValueError(msg)
 
-    packet_type = PacketType(ptype)
+    try:
+        packet_type = PacketType(ptype)
+    except ValueError:
+        msg = f"Unknown packet type: 0x{ptype:02X}"
+        raise ValueError(msg) from None
     commands: list[FixtureCommand] = []
     for i in range(count):
         offset = HEADER_SIZE + i * FIXTURE_SIZE

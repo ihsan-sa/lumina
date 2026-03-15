@@ -435,7 +435,13 @@ class GenreClassifier:
         # Genre override — skip all classification
         if genre_override is not None:
             if genre_override not in PROFILE_NAMES:
-                logger.warning("Unknown genre override: %s", genre_override)
+                logger.warning(
+                    "Unknown genre override '%s', falling back to generic. "
+                    "Valid profiles: %s",
+                    genre_override,
+                    ", ".join(sorted(PROFILE_NAMES)),
+                )
+                genre_override = "generic"
             genre_weights = {p: 0.0 for p in PROFILE_NAMES}
             genre_weights[genre_override] = 1.0
             # Determine primary family from profile

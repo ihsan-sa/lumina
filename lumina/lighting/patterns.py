@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Callable
 
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
@@ -34,7 +35,6 @@ from lumina.lighting.profiles.base import (
     route_command,
     triangle_wave,
 )
-
 
 # ─── Shared helpers ────────────────────────────────────────────────
 
@@ -377,7 +377,7 @@ def random_scatter(
     t_quant = int(timestamp * 20)
     for f in fixtures:
         seed = f"{t_quant}_{f.fixture_id}".encode()
-        h = int(hashlib.md5(seed).hexdigest()[:8], 16)  # noqa: S324
+        h = int(hashlib.md5(seed).hexdigest()[:8], 16)
         threshold = int(density * 0xFFFFFFFF)
         if h < threshold:
             result[f.fixture_id] = make_command(f, color, intensity)
@@ -909,7 +909,7 @@ def flicker(
     result: dict[int, FixtureCommand] = {}
     for f in fixtures:
         seed = f"{t_quant}_{f.fixture_id}".encode()
-        h = int(hashlib.md5(seed).hexdigest()[:8], 16)  # noqa: S324
+        h = int(hashlib.md5(seed).hexdigest()[:8], 16)
         rand_val = (h & 0xFFFF) / 0xFFFF  # 0.0-1.0
         level = max(0.0, min(1.0, intensity + (rand_val - 0.5) * jitter * 2))
         result[f.fixture_id] = make_command(f, color, level)
@@ -999,8 +999,6 @@ def blinder(
 
 
 # ─── Pattern registry ──────────────────────────────────────────────
-
-from typing import Callable, Any  # noqa: E402
 
 PatternFn = Callable[..., dict[int, "FixtureCommand"]]
 

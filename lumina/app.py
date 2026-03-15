@@ -37,7 +37,7 @@ from lumina.audio.segment_classifier import SegmentFrame
 from lumina.audio.source_separator import SourceSeparator
 from lumina.audio.structural_analyzer import StructuralAnalyzer
 from lumina.audio.vocal_detector import VocalDetector, VocalFrame
-from lumina.control.protocol import encode_packet
+from lumina.control.protocol import FixtureCommand, encode_packet
 from lumina.lighting.engine import LightingEngine
 from lumina.web.server import LuminaServer
 
@@ -158,8 +158,12 @@ class LuminaApp:
             await self._run_file_mode()
         elif self._config.mode == "showcase":
             await self._run_showcase_mode()
-        else:
-            logger.error("Live mode not yet implemented")
+        elif self._config.mode == "live":
+            logger.warning(
+                "Live audio capture not yet implemented — "
+                "starting server in idle mode for simulator/UI connections"
+            )
+            await self._run_showcase_mode()
 
     async def _run_showcase_mode(self) -> None:
         """Start server immediately for pattern showcase — no audio analysis."""
@@ -313,7 +317,7 @@ class LuminaApp:
 
         # Song score: aggregate into per-frame ScoreFrames
         # Get pattern preferences from the active profile
-        active_profile = self._engine._profiles.get(genre_profile)
+        active_profile = self._engine.get_profile(genre_profile)
         pattern_prefs = (
             active_profile.motif_pattern_preferences
             if active_profile and hasattr(active_profile, "motif_pattern_preferences")
@@ -366,6 +370,8 @@ class LuminaApp:
         finally:
             transport_task.cancel()
             await self._server.stop()
+            if self._udp_socket is not None:
+                self._udp_socket.close()
 
     async def _output_loop(self) -> None:
         """Play back pre-computed MusicState list at fps rate.
@@ -482,27 +488,27 @@ class LuminaApp:
         frame_interval = 1.0 / self._config.fps
         timestamp = self._music_states[-1].timestamp if self._music_states else 0.0
 
-        idle_state = MusicState(
-            timestamp=timestamp,
-            bpm=120.0,
-            beat_phase=0.0,
-            bar_phase=0.0,
-            is_beat=False,
-            is_downbeat=False,
-            energy=0.0,
-            energy_derivative=0.0,
-            segment="verse",
-            genre_weights={},
-            vocal_energy=0.0,
-            spectral_centroid=0.5,
-            sub_bass_energy=0.0,
-            onset_type=None,
-            drop_probability=0.0,
-        )
-
         while True:
             timestamp += frame_interval
-            idle_state.timestamp = timestamp
+
+            # Create a new MusicState each frame to avoid race with broadcast loop
+            idle_state = MusicState(
+                timestamp=timestamp,
+                bpm=120.0,
+                beat_phase=0.0,
+                bar_phase=0.0,
+                is_beat=False,
+                is_downbeat=False,
+                energy=0.0,
+                energy_derivative=0.0,
+                segment="verse",
+                genre_weights={},
+                vocal_energy=0.0,
+                spectral_centroid=0.5,
+                sub_bass_energy=0.0,
+                onset_type=None,
+                drop_probability=0.0,
+            )
 
             commands = self._engine.generate(idle_state)
             commands = self._apply_effects(commands, idle_state)
@@ -525,7 +531,7 @@ class LuminaApp:
         """
         # Check if a manual effect is active
         if self._manual_effect is not None:
-            elapsed = state.timestamp - self._manual_effect_start
+            elapsed = time.monotonic() - self._manual_effect_start
             if elapsed < self._manual_effect_duration:
                 return self._generate_manual_effect(commands, self._manual_effect)
             self._manual_effect = None
@@ -632,11 +638,7 @@ class LuminaApp:
                 effect = msg.get("effect")
                 if isinstance(effect, str) and effect in ("blackout", "strobe_burst", "uv_flash"):
                     self._manual_effect = effect
-                    # Use current playback timestamp for effect timing
-                    if self._frame_index < len(self._music_states):
-                        self._manual_effect_start = self._music_states[self._frame_index].timestamp
-                    else:
-                        self._manual_effect_start = 0.0
+                    self._manual_effect_start = time.monotonic()
                     logger.info("Manual effect: %s", effect)
 
             elif action == "audio_loaded":
@@ -664,7 +666,8 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         "--mode",
         choices=["file", "live", "showcase"],
         default="file",
-        help="Operating mode (default: file). 'showcase' starts the server immediately for pattern testing with no audio analysis.",
+        help="Operating mode (default: file). 'showcase' starts server "
+             "immediately for pattern testing with no audio analysis.",
     )
     parser.add_argument(
         "--file",

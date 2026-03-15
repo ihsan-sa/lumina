@@ -61,6 +61,10 @@ async def test_broadcast_fixture_commands(server: LuminaServer) -> None:
 
     client = TestClient(server.app)
     with client.websocket_connect("/ws") as ws:
+        # Server sends fixture_layout on connect — consume it first
+        layout_msg = ws.receive_json()
+        assert layout_msg["type"] == "fixture_layout"
+
         state = MusicState(timestamp=1.5, bpm=140.0, energy=0.8, segment="drop")
         commands = [
             FixtureCommand(fixture_id=1, red=255, green=0, blue=0, white=128, special=200),
@@ -120,6 +124,10 @@ async def test_multiple_clients_receive_broadcast(server: LuminaServer) -> None:
     with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
         assert server.client_count == 2
 
+        # Consume fixture_layout messages sent on connect
+        assert ws1.receive_json()["type"] == "fixture_layout"
+        assert ws2.receive_json()["type"] == "fixture_layout"
+
         state = MusicState(timestamp=0.0, bpm=120.0)
         commands = [FixtureCommand(fixture_id=1, red=100)]
         server.state_queue.put_nowait((state, commands))
@@ -159,6 +167,8 @@ async def test_client_disconnect_handled(server: LuminaServer) -> None:
     # Connect a new client — should work fine
     with client.websocket_connect("/ws") as ws:
         assert server.client_count == 1
+        # Consume fixture_layout sent on connect
+        assert ws.receive_json()["type"] == "fixture_layout"
         server.state_queue.put_nowait((state, commands))
         await asyncio.sleep(0.1)
         msg = ws.receive_json()
@@ -241,6 +251,9 @@ async def test_broadcast_with_numpy_music_state(server: LuminaServer) -> None:
 
     client = TestClient(server.app)
     with client.websocket_connect("/ws") as ws:
+        # Consume fixture_layout sent on connect
+        assert ws.receive_json()["type"] == "fixture_layout"
+
         # Simulate what the real audio pipeline produces: numpy scalars
         state = MusicState(
             timestamp=np.float64(1.5),
@@ -298,6 +311,11 @@ async def test_start_binds_port_and_accepts_websocket() -> None:
     try:
         async with websockets.connect("ws://127.0.0.1:18765/ws") as ws:
             assert srv.client_count == 1
+
+            # Server sends fixture_layout on connect — consume it first
+            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+            layout_msg = json.loads(raw)
+            assert layout_msg["type"] == "fixture_layout"
 
             # Push a frame through
             state = MusicState(timestamp=0.0, bpm=120.0, energy=0.5)

@@ -22,6 +22,7 @@ from lumina.analysis.song_score import MotifAssignment
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
+from lumina.lighting.patterns import PATTERN_REGISTRY
 from lumina.lighting.profiles.base import BaseProfile, Color
 from lumina.lighting.profiles.euro_alt import EuroAltProfile
 from lumina.lighting.profiles.festival_edm import FestivalEdmProfile
@@ -30,7 +31,6 @@ from lumina.lighting.profiles.french_melodic import FrenchMelodicProfile
 from lumina.lighting.profiles.generic import GenericProfile
 from lumina.lighting.profiles.psych_rnb import PsychRnbProfile
 from lumina.lighting.profiles.rage_trap import RageTrapProfile
-from lumina.lighting.patterns import PATTERN_REGISTRY
 from lumina.lighting.profiles.theatrical import TheatricalProfile
 from lumina.lighting.profiles.uk_bass import UkBassProfile
 
@@ -145,6 +145,17 @@ class LightingEngine:
     def profile_names(self) -> list[str]:
         """Names of all registered profiles."""
         return sorted(self._profiles)
+
+    def get_profile(self, name: str) -> BaseProfile | None:
+        """Look up a registered profile by name.
+
+        Args:
+            name: Profile name (e.g. "rage_trap").
+
+        Returns:
+            The profile instance, or None if not registered.
+        """
+        return self._profiles.get(name)
 
     @property
     def last_debug_info(self) -> dict[str, object]:
@@ -321,8 +332,9 @@ class LightingEngine:
                 tally[0] += 1
 
             # Collect non-black colors from pars and LED bars
-            if is_active and f.fixture_type in (FixtureType.PAR, FixtureType.LED_BAR):
-                if c.red + c.green + c.blue > 30:
+            if (is_active
+                    and f.fixture_type in (FixtureType.PAR, FixtureType.LED_BAR)
+                    and c.red + c.green + c.blue > 30):
                     color_samples.append((c.red, c.green, c.blue))
 
         active_total = sum(v[0] for v in type_tallies.values())

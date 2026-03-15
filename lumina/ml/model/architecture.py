@@ -34,7 +34,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-
 # ── Constants ────────────────────────────────────────────────────────
 
 CONTEXT_WINDOW = 40  # 4 seconds at 10fps
@@ -296,7 +295,7 @@ class LightingTransformer(nn.Module):
               - spatial_out: (batch, seq_len, 5) — sigmoid-activated
               - effect_out:  (batch, seq_len, 3) — sigmoid-activated
         """
-        batch_size, seq_len, _ = music_features.shape
+        _, seq_len, _ = music_features.shape
 
         # Embed categorical inputs.
         genre_emb = self.genre_embedding(genre_ids)  # (B, T, genre_embed_dim)

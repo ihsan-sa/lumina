@@ -18,7 +18,6 @@ from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
 from lumina.lighting.fixture_map import FixtureInfo, FixtureMap, FixtureType
 
-
 # ─── Color helpers ──────────────────────────────────────────────────
 
 

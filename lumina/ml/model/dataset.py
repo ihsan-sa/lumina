@@ -21,7 +21,6 @@ from torch.utils.data import Dataset
 from lumina.ml.model.architecture import (
     CONTEXT_WINDOW,
     GENRE_LABELS,
-    SEGMENT_LABELS,
     genre_to_index,
     segment_to_index,
 )
@@ -191,7 +190,7 @@ class LightingDataset(Dataset[dict[str, torch.Tensor]]):
             genre_groups.setdefault(genre, []).append(f)
 
         result: list[Path] = []
-        for genre, group_files in sorted(genre_groups.items()):
+        for _genre, group_files in sorted(genre_groups.items()):
             indices = rng.permutation(len(group_files))
             n = len(group_files)
             train_end = int(n * 0.8)
@@ -368,6 +367,16 @@ def create_dataloaders(
     train_ds = LightingDataset(data_dir, split="train", seed=seed)
     val_ds = LightingDataset(data_dir, split="val", seed=seed)
     test_ds = LightingDataset(data_dir, split="test", seed=seed)
+
+    if len(train_ds) == 0:
+        raise RuntimeError(
+            f"No training data found in {data_dir or 'data/features/aligned'}.\n"
+            "Run the data pipeline first:\n"
+            "  1. Download videos: lumina/ml/data/downloader.py\n"
+            "  2. Extract features: lumina/ml/audio/batch_analyzer.py + lumina/ml/video/\n"
+            "  3. Align: lumina/ml/data/aligner.py\n"
+            "Then retry: python -m lumina.ml.model.train"
+        )
 
     train_loader = torch.utils.data.DataLoader(
         train_ds,

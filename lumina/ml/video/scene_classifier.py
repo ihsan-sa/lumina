@@ -138,7 +138,7 @@ class SceneClassifier:
 
         all_scores = {
             _LABEL_TO_CATEGORY[label]: score
-            for label, score in zip(SCENE_LABELS, probs_list)
+            for label, score in zip(SCENE_LABELS, probs_list, strict=True)
         }
 
         return SceneClassification(
@@ -194,7 +194,7 @@ class SceneClassifier:
 
                 all_scores = {
                     _LABEL_TO_CATEGORY[label]: score
-                    for label, score in zip(SCENE_LABELS, frame_probs)
+                    for label, score in zip(SCENE_LABELS, frame_probs, strict=True)
                 }
 
                 results.append(
