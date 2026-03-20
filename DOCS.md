@@ -836,7 +836,7 @@ per-fixture `FixtureCommand` using venue fixture layout.
 | Profile blending | Not implemented | Engine picks single profile only (CLAUDE.md describes blending) |
 | `blender.py`, `transitions.py` | Not created | Cross-genre blending and transitions |
 | `lumina/control/fixture.py` | Implemented | Fixture abstraction layer (FixtureState + FixtureRegistry) |
-| `lumina/control/discovery.py` | Not created | mDNS fixture discovery |
+| `lumina/control/discovery.py` | Implemented | mDNS-style fixture discovery and heartbeat |
 | `lumina/control/network.py` | Implemented | Async UDP network manager — unicast/broadcast, 60fps, EMA latency stats |
 | `scripts/capture_audio.py` | Not created | Audio loopback capture utility |
 | `scripts/fixture_tester.py` | Not created | Send test commands to fixtures |
@@ -876,6 +876,7 @@ All tests in `tests/`. Uses pytest with pytest-asyncio.
 | Test File | Tests | Module |
 |---|---|---|
 | `test_protocol.py` | UDP encode/decode roundtrip | `lumina/control/protocol.py` |
+| `test_discovery.py` | Discovery service lifecycle, packet dispatch, heartbeat | `lumina/control/discovery.py` |
 | `test_beat_detector.py` | Streaming/offline beat detection | `lumina/audio/beat_detector.py` |
 | `test_energy_tracker.py` | Energy + derivative + spectral centroid | `lumina/audio/energy_tracker.py` |
 | `test_onset_detector.py` | Transient detection | `lumina/audio/onset_detector.py` |
