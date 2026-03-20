@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lumina.ml.data.catalog import CameraType, CatalogEntry, CatalogManager, LightingVisibility, VenueType
+from lumina.ml.data.catalog import (
+    CameraType,
+    CatalogManager,
+    LightingVisibility,
+    VenueType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -583,17 +588,36 @@ if __name__ == "__main__":
     # download <url> --genre <profile>
     dl_parser = subparsers.add_parser("download", help="Download a single video by URL.")
     dl_parser.add_argument("url", help="Video URL (YouTube, etc.)")
-    dl_parser.add_argument("--genre", required=True, choices=list(GENRE_SEARCH_QUERIES.keys()), help="Genre profile to file under.")
+    dl_parser.add_argument(
+        "--genre", required=True,
+        choices=list(GENRE_SEARCH_QUERIES.keys()),
+        help="Genre profile to file under.",
+    )
 
     # list — show catalog summary
     subparsers.add_parser("list", help="Show catalog summary (genres, video counts, total hours).")
 
     # search --genre <profile> [--genre ...] --max-results N
-    search_parser = subparsers.add_parser("search", help="Search and download videos for one or more genres.")
-    search_parser.add_argument("--genre", dest="genres", action="append", choices=list(GENRE_SEARCH_QUERIES.keys()), help="Genre(s) to download. Repeat for multiple. Default: all.")
-    search_parser.add_argument("--max-results", type=int, default=5, help="Max results per search query (default: 5).")
-    search_parser.add_argument("--min-duration", type=int, default=120, help="Minimum video duration in seconds (default: 120).")
-    search_parser.add_argument("--max-duration", type=int, default=7200, help="Maximum video duration in seconds (default: 7200).")
+    search_parser = subparsers.add_parser(
+        "search", help="Search and download videos for genres.",
+    )
+    search_parser.add_argument(
+        "--genre", dest="genres", action="append",
+        choices=list(GENRE_SEARCH_QUERIES.keys()),
+        help="Genre(s) to download. Repeat for multiple.",
+    )
+    search_parser.add_argument(
+        "--max-results", type=int, default=5,
+        help="Max results per search query (default: 5).",
+    )
+    search_parser.add_argument(
+        "--min-duration", type=int, default=120,
+        help="Min video duration in seconds (default: 120).",
+    )
+    search_parser.add_argument(
+        "--max-duration", type=int, default=7200,
+        help="Max video duration in seconds (default: 7200).",
+    )
 
     args = parser.parse_args()
     downloader = VideoDownloader()

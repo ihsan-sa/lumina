@@ -16,13 +16,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-class CameraType(str, Enum):
+class CameraType(StrEnum):
     """Camera setup type for quality assessment."""
 
     FIXED_WIDE = "fixed_wide"
@@ -32,7 +32,7 @@ class CameraType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class VenueType(str, Enum):
+class VenueType(StrEnum):
     """Venue type classification."""
 
     FESTIVAL_OUTDOOR = "festival_outdoor"
@@ -44,7 +44,7 @@ class VenueType(str, Enum):
     UNKNOWN = "unknown"
 
 
-class LightingVisibility(str, Enum):
+class LightingVisibility(StrEnum):
     """How well stage lighting is visible in the footage."""
 
     HIGH = "high"
