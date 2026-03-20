@@ -835,9 +835,9 @@ per-fixture `FixtureCommand` using venue fixture layout.
 | Live audio mode (Mode A) | Not implemented | `--mode live` falls back to showcase |
 | Profile blending | Not implemented | Engine picks single profile only (CLAUDE.md describes blending) |
 | `blender.py`, `transitions.py` | Not created | Cross-genre blending and transitions |
-| `lumina/control/fixture.py` | Not created | Fixture abstraction (partially covered by fixture_map.py) |
+| `lumina/control/fixture.py` | Implemented | Fixture abstraction layer (FixtureState + FixtureRegistry) |
 | `lumina/control/discovery.py` | Not created | mDNS fixture discovery |
-| `lumina/control/network.py` | Not created | Network manager for 60fps UDP sending |
+| `lumina/control/network.py` | Implemented | Async UDP network manager — unicast/broadcast, 60fps, EMA latency stats |
 | `scripts/capture_audio.py` | Not created | Audio loopback capture utility |
 | `scripts/fixture_tester.py` | Not created | Send test commands to fixtures |
 | `scripts/profile_demo.py` | Not created | Demo each lighting profile |
