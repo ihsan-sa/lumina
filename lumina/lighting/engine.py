@@ -4,9 +4,13 @@ Receives MusicState at 60fps, selects the active profile(s) based on
 genre_weights, runs them through the fixture map, and outputs a final
 list of FixtureCommand — one per fixture.
 
-Profile selection: the engine picks the highest-weighted registered
-profile from genre_weights.  If no genre exceeds 0.3 weight, the
-generic fallback profile is used to guarantee acceptable output.
+Profile selection now supports two modes:
+- **Single profile**: when one genre dominates (weight >= 0.3), it runs alone.
+- **Blended**: when multiple genres have significant weight, the ProfileBlender
+  combines their outputs proportionally.
+
+Cross-genre transitions use the TransitionEngine to smooth profile switches
+over configurable durations (segment-aware: drops snap, breakdowns dissolve).
 
 LightingContext: maintained across frames to track recent patterns,
 motif visual assignments, and section duration for contrast management.
@@ -21,6 +25,7 @@ from dataclasses import dataclass, field
 from lumina.analysis.song_score import MotifAssignment
 from lumina.audio.models import MusicState
 from lumina.control.protocol import FixtureCommand
+from lumina.lighting.blender import ProfileBlender
 from lumina.lighting.fixture_map import FixtureMap, FixtureType
 from lumina.lighting.patterns import PATTERN_REGISTRY
 from lumina.lighting.profiles.base import BaseProfile, Color
@@ -33,6 +38,7 @@ from lumina.lighting.profiles.psych_rnb import PsychRnbProfile
 from lumina.lighting.profiles.rage_trap import RageTrapProfile
 from lumina.lighting.profiles.theatrical import TheatricalProfile
 from lumina.lighting.profiles.uk_bass import UkBassProfile
+from lumina.lighting.transitions import TransitionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +130,11 @@ class LightingEngine:
         fixture_map: Venue fixture layout.  If None, uses the default.
     """
 
-    def __init__(self, fixture_map: FixtureMap | None = None) -> None:
+    def __init__(
+        self,
+        fixture_map: FixtureMap | None = None,
+        enable_blending: bool = True,
+    ) -> None:
         self._map = fixture_map if fixture_map is not None else FixtureMap()
         self._profiles: dict[str, BaseProfile] = {
             name: cls(self._map) for name, cls in _PROFILE_REGISTRY.items()
@@ -135,6 +145,15 @@ class LightingEngine:
         self._motif_assignments: dict[int, MotifAssignment] = {}
         self._pattern_override: str | None = None
         self._genre_override: str | None = None
+
+        # Profile blending: when enabled, multiple profiles with significant
+        # weight are combined proportionally instead of picking one winner.
+        self._enable_blending = enable_blending
+        self._blender = ProfileBlender(
+            {k: v for k, v in self._profiles.items() if k != "generic"},
+            min_weight=0.1,
+        )
+        self._transition_engine = TransitionEngine()
 
     @property
     def fixture_map(self) -> FixtureMap:
@@ -283,7 +302,47 @@ class LightingEngine:
         )
 
         profile = self._select_profile(state)
-        commands = profile.generate(state)
+
+        # Blending: if enabled and no genre override, try blending multiple
+        # profiles proportionally.  Fall back to single-profile if only one
+        # profile has significant weight (the blender handles this efficiently).
+        if (
+            self._enable_blending
+            and self._genre_override is None
+            and len(state.genre_weights) > 1
+        ):
+            # Check if there are at least 2 profiles with weight >= 0.1
+            active_count = sum(
+                1 for n, w in state.genre_weights.items()
+                if n in self._profiles and n != "generic" and w >= 0.1
+            )
+            if active_count >= 2:
+                commands = self._blender.generate(state)
+                self._last_debug_info = self._build_debug_info(
+                    profile, state, commands
+                )
+                self._last_debug_info["blended"] = True
+                return commands
+
+        # Transition smoothing: when the dominant profile changes, cross-fade
+        # between old and new outputs over a segment-aware duration.
+        blend_factor = self._transition_engine.update(
+            profile.name, state.segment, state.timestamp
+        )
+        if blend_factor is not None:
+            # Get the outgoing profile's commands
+            from_name = self._transition_engine.last_profile
+            from_profile = self._profiles.get(
+                from_name, self._profiles[self._fallback_profile]
+            )
+            from_cmds = from_profile.generate(state)
+            to_cmds = profile.generate(state)
+            commands = self._transition_engine.blend_outputs(
+                from_cmds, to_cmds, blend_factor
+            )
+        else:
+            commands = profile.generate(state)
+
         self._last_debug_info = self._build_debug_info(profile, state, commands)
         return commands
 

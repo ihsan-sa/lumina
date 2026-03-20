@@ -36,8 +36,8 @@ from lumina.control.protocol import (
 
 log = logging.getLogger(__name__)
 
-# Exponential moving-average smoothing factor for latency tracking (0 < α ≤ 1).
-# At 60fps each sample is ~16.7ms apart; α=0.1 gives a ~150ms smoothing window.
+# Exponential moving-average smoothing factor for latency tracking (0 < a <= 1).
+# At 60fps each sample is ~16.7ms apart; a=0.1 gives a ~150ms smoothing window.
 _EMA_ALPHA = 0.1
 
 # Maximum sequence number before wrapping (uint16).

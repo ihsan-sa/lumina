@@ -21,11 +21,11 @@ Transport notes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import socket
 import time
 from collections.abc import Callable
-from typing import Any
 
 from lumina.control.protocol import (
     PROTOCOL_PORT,
@@ -176,10 +176,8 @@ class DiscoveryService:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         # SO_REUSEPORT lets multiple processes bind the same port during dev.
         if hasattr(socket, "SO_REUSEPORT"):
-            try:
+            with contextlib.suppress(OSError):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            except OSError:
-                pass  # Not available on all platforms (e.g. Windows)
         sock.bind(("", self._port))
         sock.setblocking(False)
 
@@ -210,10 +208,8 @@ class DiscoveryService:
 
         if self._listen_task is not None and not self._listen_task.done():
             self._listen_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._listen_task
-            except asyncio.CancelledError:
-                pass
             self._listen_task = None
 
         if self._transport is not None:
@@ -384,7 +380,7 @@ class DiscoveryService:
         while self._running:
             try:
                 data, addr = await asyncio.wait_for(self._recv_queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue  # Nothing in queue — check self._running and loop again
             except asyncio.CancelledError:
                 break

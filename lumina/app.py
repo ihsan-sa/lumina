@@ -33,7 +33,7 @@ from lumina.audio.energy_tracker import EnergyFrame, EnergyTracker
 from lumina.audio.genre_classifier import GenreClassifier, GenreFrame
 from lumina.audio.models import MusicState
 from lumina.audio.onset_detector import OnsetDetector, OnsetEvent
-from lumina.audio.segment_classifier import SegmentFrame
+from lumina.audio.segment_classifier import SegmentClassifier, SegmentFrame
 from lumina.audio.source_separator import SourceSeparator
 from lumina.audio.structural_analyzer import StructuralAnalyzer
 from lumina.audio.vocal_detector import VocalDetector, VocalFrame
@@ -159,11 +159,7 @@ class LuminaApp:
         elif self._config.mode == "showcase":
             await self._run_showcase_mode()
         elif self._config.mode == "live":
-            logger.warning(
-                "Live audio capture not yet implemented — "
-                "starting server in idle mode for simulator/UI connections"
-            )
-            await self._run_showcase_mode()
+            await self._run_live_mode()
 
     async def _run_showcase_mode(self) -> None:
         """Start server immediately for pattern showcase — no audio analysis."""
@@ -174,6 +170,173 @@ class LuminaApp:
         finally:
             transport_task.cancel()
             await self._server.stop()
+
+    async def _run_live_mode(self) -> None:
+        """Live audio capture and real-time analysis (Mode A).
+
+        Captures system audio via sounddevice loopback, runs streaming
+        analyzers on each audio chunk, generates lighting commands per
+        frame, and pushes them to the WebSocket server in real time.
+
+        Latency target: ~100-200ms (capture block + analysis).
+        """
+        import sounddevice as sd
+
+        sr = self._config.sr
+        fps = self._config.fps
+        block_size = sr // fps  # One block per frame
+        frame_interval = 1.0 / fps
+
+        # Create streaming analyzers
+        beat_detector = BeatDetector(sr=sr, fps=fps)
+        energy_tracker = EnergyTracker(sr=sr, fps=fps)
+        onset_detector = OnsetDetector(sr=sr, fps=fps)
+        vocal_detector = VocalDetector(sr=sr, fps=fps)
+        genre_classifier = GenreClassifier(fps=fps)
+        drop_predictor = DropPredictor(fps=fps)
+        segment_classifier = SegmentClassifier(fps=fps)
+
+        # Audio callback deposits chunks into an asyncio queue
+        audio_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=16)
+        loop = asyncio.get_running_loop()
+
+        def _audio_callback(
+            indata: np.ndarray,
+            frames: int,
+            time_info: object,
+            status: sd.CallbackFlags,
+        ) -> None:
+            if status:
+                logger.warning("Audio callback status: %s", status)
+            mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy().flatten()
+            with contextlib.suppress(asyncio.QueueFull):
+                loop.call_soon_threadsafe(audio_queue.put_nowait, mono)
+
+        # Apply genre override at engine level if configured
+        if self._config.genre_override:
+            self._engine.set_genre_override(self._config.genre_override)
+
+        # Start WebSocket server
+        await self._server.start()
+        transport_task = asyncio.create_task(self._handle_transport())
+
+        logger.info("Starting live audio capture (sr=%d, block=%d)", sr, block_size)
+
+        try:
+            stream = sd.InputStream(
+                samplerate=sr,
+                blocksize=block_size,
+                channels=1,
+                dtype="float32",
+                callback=_audio_callback,
+            )
+            stream.start()
+            logger.info("Live audio stream started")
+
+            seq = 0
+            timestamp = 0.0
+
+            while True:
+                # Wait for next audio chunk
+                chunk = await audio_queue.get()
+                t0 = time.monotonic()
+                timestamp += len(chunk) / sr
+
+                # Run streaming analyzers
+                beat_frames = beat_detector.process_chunk(chunk)
+                energy_frames = energy_tracker.process_chunk(chunk)
+                onset_frames = onset_detector.process_chunk(chunk)
+                vocal_frames = vocal_detector.process_chunk(chunk)
+
+                # Align frame counts (take minimum)
+                n = min(
+                    len(beat_frames),
+                    len(energy_frames),
+                    len(onset_frames),
+                    len(vocal_frames),
+                )
+                if n == 0:
+                    continue
+
+                for i in range(n):
+                    beat = beat_frames[i]
+                    energy = energy_frames[i]
+                    onset = onset_frames[i]
+                    vocal = vocal_frames[i]
+                    has_onset = onset is not None
+
+                    # Frame-level classifiers
+                    drop = drop_predictor.process_frame(
+                        energy.energy,
+                        energy.energy_derivative,
+                        energy.spectral_centroid,
+                        energy.sub_bass_energy,
+                        vocal.vocal_energy,
+                        has_onset,
+                    )
+                    genre = genre_classifier.process_frame(
+                        energy.energy,
+                        energy.spectral_centroid,
+                        energy.sub_bass_energy,
+                        has_onset,
+                        vocal.vocal_energy,
+                        drop.drop_probability,
+                    )
+                    segment = segment_classifier.process_frame(
+                        energy.energy,
+                        energy.energy_derivative,
+                        energy.spectral_centroid,
+                        energy.sub_bass_energy,
+                        vocal.vocal_energy,
+                        has_onset,
+                    )
+
+                    frame_time = timestamp - (n - i - 1) * frame_interval
+                    state = _assemble_music_state(
+                        timestamp=frame_time,
+                        beat=beat,
+                        energy=energy,
+                        onset=onset,
+                        vocal=vocal,
+                        segment=segment,
+                        genre=genre,
+                        drop=drop,
+                    )
+
+                    commands = self._engine.generate(state)
+                    commands = self._apply_effects(commands, state)
+
+                    with contextlib.suppress(asyncio.QueueFull):
+                        self._server.state_queue.put_nowait((state, commands))
+
+                    # Optional UDP output
+                    if self._udp_socket and self._udp_addr:
+                        seq = (seq + 1) & 0xFFFF
+                        ts_ms = int(frame_time * 1000) & 0xFFFF
+                        packet = encode_packet(
+                            commands, sequence=seq, timestamp_ms=ts_ms
+                        )
+                        self._udp_socket.sendto(packet, self._udp_addr)
+
+                # Debug logging (once per second)
+                if self._config.debug:
+                    gen_ms = (time.monotonic() - t0) * 1000
+                    if int(timestamp) != int(timestamp - len(chunk) / sr):
+                        logger.info(
+                            "LIVE t=%.1f n=%d gen=%.1fms qsize=%d",
+                            timestamp, n, gen_ms, audio_queue.qsize(),
+                        )
+
+        except Exception:
+            logger.exception("Live audio error")
+        finally:
+            if "stream" in locals():
+                stream.stop()
+                stream.close()
+            transport_task.cancel()
+            await self._server.stop()
+            if self._udp_socket is not None:
+                self._udp_socket.close()
 
     async def _run_file_mode(self) -> None:
         """Offline analysis + playback at fps rate.
@@ -482,14 +645,16 @@ class LuminaApp:
 
         Generates synthetic frames at fps rate so that pattern_override commands
         sent from the simulator continue to produce visible output even after the
-        song has finished.
+        song has finished.  Uses absolute wall-clock timing to avoid drift.
         """
         logger.info("Entering idle mode — server still accepting connections")
         frame_interval = 1.0 / self._config.fps
-        timestamp = self._music_states[-1].timestamp if self._music_states else 0.0
+        base_offset = self._music_states[-1].timestamp if self._music_states else 0.0
+        frame_count = 0
 
         while True:
-            timestamp += frame_interval
+            frame_count += 1
+            timestamp = base_offset + frame_count * frame_interval
 
             # Create a new MusicState each frame to avoid race with broadcast loop
             idle_state = MusicState(
@@ -594,7 +759,6 @@ class LuminaApp:
     async def _handle_transport(self) -> None:
         """Process transport and control commands from WebSocket clients."""
         fps = self._config.fps
-        n = len(self._music_states)
 
         while True:
             msg: dict[str, Any] = await self._server.transport_queue.get()
@@ -609,9 +773,9 @@ class LuminaApp:
                     self._playing = False
                     logger.info("Transport: pause")
                 elif cmd == "seek":
+                    n = len(self._music_states)
                     position = float(msg.get("position", 0.0))
-                    self._frame_index = min(int(position * fps), n - 1)
-                    self._frame_index = max(0, self._frame_index)
+                    self._frame_index = max(0, min(int(position * fps), max(n - 1, 0)))
                     logger.info("Transport: seek to %.1fs (frame %d)", position, self._frame_index)
 
             elif action == "pattern_override":

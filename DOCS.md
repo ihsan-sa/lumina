@@ -1,6 +1,6 @@
 # LUMINA Technical Documentation & Agent Context
 
-Last updated: 2026-03-15
+Last updated: 2026-03-20
 
 This is the single source of truth for agent-to-agent context transfer. Read this before
 modifying any part of the codebase. For design philosophy and project-level rules, see `CLAUDE.md`.
@@ -18,12 +18,12 @@ firmware). The backend analyzes audio, generates per-fixture commands at 60fps, 
 to connected clients (3D simulator or physical fixtures) via WebSocket and UDP.
 
 **Current Phase**: Phase 1 -- Foundation. Rule-based lighting profiles with ML pipeline scaffolded.
-Live audio mode not implemented; file mode and showcase mode work.
+All three operating modes work.
 
 **Operating Modes**:
 - `file` -- Offline analysis of an audio file, then playback at 60fps.
 - `showcase` -- Server starts immediately with no audio for pattern showcase testing.
-- `live` -- Not implemented yet (falls back to showcase mode).
+- `live` -- Real-time system audio capture via sounddevice, streaming analysis, live lighting.
 
 **Key Principle**: This is NOT a beat-sync system. Each genre profile encodes a complete lighting
 philosophy. A Carti mosh-pit track and a Stromae theatrical ballad produce completely different
@@ -491,6 +491,34 @@ Each profile can override these for motif assignment:
 - `motif_pattern_preferences` -- ordered list of pattern names (default: `["chase_lr", "alternate", "breathe", "converge"]`)
 - `motif_color_palette` -- list of Colors to cycle through for motifs
 
+### Profile Blending (`lumina/lighting/blender.py`)
+
+When a track spans multiple genres, the `ProfileBlender` runs all profiles with weight >= 0.1
+and blends their outputs proportionally:
+
+- **RGBW channels**: Weighted average across all active profiles
+- **Strobe**: Uses rate/intensity from the highest-weighted profile with strobe active (no blending)
+- **Special byte**: Weighted average, clamped 0-255
+
+Single active profile -> delegates directly (zero overhead). The engine enables blending
+automatically when `len(genre_weights) > 1` and at least 2 profiles have weight >= 0.1.
+
+### Cross-Genre Transitions (`lumina/lighting/transitions.py`)
+
+When the dominant profile changes, `TransitionEngine` cross-fades between old and new outputs
+over segment-aware durations:
+
+| Segment | Duration | Rationale |
+|---|---|---|
+| `drop` | 0.1s | Drops should snap immediately |
+| `breakdown` | 3.0s | Slow dissolve for atmospheric sections |
+| `chorus` | 1.5s | Moderate blend for energy shifts |
+| default | 2.0s | Safe default for other transitions |
+
+Three easing curves: `linear`, `ease_in_out` (cubic), `crossfade` (sqrt / equal-power).
+Strobe channels hard-switch at the midpoint rather than blending (blended strobe rates
+look wrong visually).
+
 ---
 
 ## 8. 20 Patterns
@@ -901,15 +929,6 @@ per-fixture `FixtureCommand` using venue fixture layout.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Live audio mode (Mode A) | Not implemented | `--mode live` falls back to showcase |
-| Profile blending | Not implemented | Engine picks single profile only (CLAUDE.md describes blending) |
-| `blender.py`, `transitions.py` | Not created | Cross-genre blending and transitions |
-| `lumina/control/fixture.py` | Implemented | Fixture abstraction layer (FixtureState + FixtureRegistry) |
-| `lumina/control/discovery.py` | Implemented | mDNS-style fixture discovery and heartbeat |
-| `lumina/control/network.py` | Implemented | Async UDP network manager — unicast/broadcast, 60fps, EMA latency stats |
-| `scripts/capture_audio.py` | Not created | Audio loopback capture utility |
-| `scripts/fixture_tester.py` | Not created | Send test commands to fixtures |
-| `scripts/profile_demo.py` | Not created | Demo each lighting profile |
 | DJ module (Mode B) | Empty `lumina/dj/` | Phase 4 planned |
 | Mobile party UI | Not started | Separate from simulator (Phase 2+) |
 
@@ -917,7 +936,6 @@ per-fixture `FixtureCommand` using venue fixture layout.
 
 | ID | Severity | Description |
 |---|---|---|
-| B6 | Info | No profile blending -- single profile selection only |
 | B7-partial | Info | `firmware/` directory does not exist (expected -- firmware is not written by Claude) |
 
 ### Previously Fixed Bugs
@@ -929,10 +947,16 @@ per-fixture `FixtureCommand` using venue fixture layout.
 | B3 | Mode radio buttons wired to onChange handlers |
 | B4 | `asyncio.get_event_loop()` changed to `asyncio.get_running_loop()` |
 | B5 | Extended MusicState fields (7) added to WebSocket broadcast + TypeScript types |
+| B6 | Profile blending implemented via `ProfileBlender` + `TransitionEngine` |
 | B8 | `pandas`, `pyarrow` added to pyproject.toml |
 | B9 | Dataset/architecture schema aligned to 11 features (removed 5 unimplemented) |
 | B10 | Training resume support added (checkpoints, graceful shutdown) |
 | B11 | Scheduler state saved in checkpoints |
+| B13 | Idle loop timestamp drift fixed (absolute timing) |
+| B14 | `_handle_transport` seek crash fixed (stale `n=0` in showcase mode) |
+| B15 | Missing control modules implemented: `fixture.py`, `discovery.py`, `network.py` |
+| B16 | Profile blending + cross-genre transitions: `blender.py`, `transitions.py` |
+| B17 | Live audio mode (Mode A) implemented with streaming analyzers |
 
 ---
 
@@ -973,6 +997,10 @@ All tests in `tests/`. Uses pytest with pytest-asyncio.
 | `test_motif_detector.py` | Macro + micro motif detection | `lumina/analysis/motif_detector.py` |
 | `test_arc_planner.py` | Headroom budgeting | `lumina/analysis/arc_planner.py` |
 | `test_song_score.py` | Score frame aggregation | `lumina/analysis/song_score.py` |
+| `test_blender.py` | Profile blending, weighted avg | `lumina/lighting/blender.py` |
+| `test_transitions.py` | Easing functions, transition engine | `lumina/lighting/transitions.py` |
+| `test_fixture_registry.py` | Fixture state, registry ops | `lumina/control/fixture.py` |
+| `test_network_manager.py` | UDP network manager lifecycle | `lumina/control/network.py` |
 | `test_app.py` | App integration tests | `lumina/app.py` |
 | `test_server.py` | WebSocket server tests | `lumina/web/server.py` |
 
