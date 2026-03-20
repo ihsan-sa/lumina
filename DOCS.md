@@ -702,6 +702,75 @@ packet_type, sequence, timestamp_ms, commands = decode_packet(raw_bytes)
 
 ---
 
+## 11b. Fixture Abstraction Layer (`lumina/control/fixture.py`)
+
+Bridges the static layout metadata in `lumina/lighting/fixture_map.py` to the network control
+layer. Contains two public types.
+
+### `FixtureState` (dataclass)
+
+Tracks the live output state of one physical fixture.
+
+| Field | Type | Description |
+|---|---|---|
+| `fixture_id` | `int` | Fixture address (1-255), mirrors `info.fixture_id` |
+| `info` | `FixtureInfo` | Static metadata (position, type, role, groups, name) |
+| `last_command` | `FixtureCommand \| None` | Most recent command sent; `None` if never commanded |
+| `online` | `bool` | `True` when seen within timeout window |
+| `last_seen` | `float` | `time.monotonic()` of last heartbeat/discovery; `0.0` = never |
+| `firmware_version` | `int` | Reported by fixture at discovery time; `0` if unknown |
+
+Helper methods:
+
+- `seconds_since_seen() -> float` -- elapsed seconds since last heartbeat; `inf` if never seen.
+- `is_dark() -> bool` -- `True` if `last_command` is `None` or all channels are zero.
+
+### `FixtureRegistry` (class)
+
+Owns the full set of known fixtures; single source of truth for online status.
+
+```python
+from lumina.control.fixture import FixtureRegistry
+from lumina.lighting.fixture_map import FixtureMap
+
+fmap = FixtureMap()               # default 15-fixture layout
+registry = FixtureRegistry(fmap)  # all fixtures start offline
+
+# Discovery / heartbeat callback (from discovery.py)
+registry.mark_seen(fixture_id=1, firmware_version=3)
+
+# Lighting engine output -> registry -> network sender (each 60fps frame)
+registry.apply_commands(commands)
+
+# Periodic health sweep (run every ~1s from a background task)
+registry.check_timeouts(timeout=10.0)
+
+for state in registry.online_fixtures():
+    ...
+```
+
+Key methods:
+
+| Method | Description |
+|---|---|
+| `get(id) -> FixtureState \| None` | Look up by ID |
+| `all_states() -> list[FixtureState]` | All fixtures, sorted by ID |
+| `online_fixtures() -> list[FixtureState]` | Only `online=True` fixtures |
+| `__len__() -> int` | Total registered fixture count |
+| `update_command(cmd)` | Store last sent command; broadcast (ID 0) updates all |
+| `mark_seen(id, firmware_version=0)` | Transition fixture to `online=True`, record timestamp |
+| `check_timeouts(timeout=10.0)` | Mark fixtures offline if unseen longer than `timeout` seconds |
+| `apply_commands(list[FixtureCommand])` | Batch `update_command` for a full lighting frame |
+| `summary() -> str` | Multi-line human-readable status string for debug logging |
+
+**Thread safety**: not thread-safe. All calls must come from the asyncio event loop that owns
+the network manager.
+
+**Broadcast semantics**: `update_command` with `fixture_id=0` writes the same command into
+`last_command` for every fixture in the registry.
+
+---
+
 ## 12. Simulator
 
 ### Architecture
