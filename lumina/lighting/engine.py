@@ -38,6 +38,7 @@ from lumina.lighting.profiles.psych_rnb import PsychRnbProfile
 from lumina.lighting.profiles.rage_trap import RageTrapProfile
 from lumina.lighting.profiles.theatrical import TheatricalProfile
 from lumina.lighting.profiles.uk_bass import UkBassProfile
+from lumina.lighting.safety import SafetyLevel, SafetyLimiter
 from lumina.lighting.transitions import TransitionEngine
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ class LightingEngine:
         self,
         fixture_map: FixtureMap | None = None,
         enable_blending: bool = True,
+        safety_level: SafetyLevel = SafetyLevel.STANDARD,
     ) -> None:
         self._map = fixture_map if fixture_map is not None else FixtureMap()
         self._profiles: dict[str, BaseProfile] = {
@@ -154,6 +156,17 @@ class LightingEngine:
             min_weight=0.1,
         )
         self._transition_engine = TransitionEngine()
+
+        # Mandatory safety limiter — cannot be bypassed by profiles or effects.
+        self._safety = SafetyLimiter(
+            safety_level=safety_level,
+            fixture_count=len(self._map),
+        )
+
+    @property
+    def safety_limiter(self) -> SafetyLimiter:
+        """The mandatory safety limiter instance."""
+        return self._safety
 
     @property
     def fixture_map(self) -> FixtureMap:
@@ -286,7 +299,7 @@ class LightingEngine:
                             red=0, green=0, blue=0, white=0,
                             strobe_rate=0, strobe_intensity=0, special=0,
                         ))
-                return result
+                return self._safety.process(result)
 
         # Update context: track segment duration
         if state.segment != self._context.last_segment:
@@ -322,7 +335,7 @@ class LightingEngine:
                     profile, state, commands
                 )
                 self._last_debug_info["blended"] = True
-                return commands
+                return self._safety.process(commands)
 
         # Transition smoothing: when the dominant profile changes, cross-fade
         # between old and new outputs over a segment-aware duration.
@@ -343,6 +356,7 @@ class LightingEngine:
         else:
             commands = profile.generate(state)
 
+        commands = self._safety.process(commands)
         self._last_debug_info = self._build_debug_info(profile, state, commands)
         return commands
 

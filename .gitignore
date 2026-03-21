@@ -40,6 +40,9 @@ firmware/build/
 # ML training data / models (large, generated)
 /data/
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Environment
 .env
 .env.local
