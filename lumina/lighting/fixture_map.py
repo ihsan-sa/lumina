@@ -14,8 +14,14 @@ Default layout: 15 fixtures in a 5m x 7m x 2.5m room.
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class FixtureType(Enum):
@@ -85,6 +91,82 @@ class FixtureMap:
         if fixtures is None:
             fixtures = _default_fixtures()
         self._fixtures: dict[int, FixtureInfo] = {f.fixture_id: f for f in fixtures}
+
+    # ─── Serialization ────────────────────────────────────────────
+
+    @classmethod
+    def load_from_json(cls, path: Path) -> FixtureMap:
+        """Load a fixture layout from a JSON file.
+
+        Falls back to the default 15-fixture layout if the file cannot be
+        read or parsed.
+
+        Args:
+            path: Path to the JSON file.
+
+        Returns:
+            A FixtureMap populated from the JSON data.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to load fixture layout from %s (%s) — "
+                "using default layout",
+                path, exc,
+            )
+            return cls()
+
+        fixtures: list[FixtureInfo] = []
+        for entry in data.get("fixtures", []):
+            try:
+                fixtures.append(_fixture_from_dict(entry))
+            except (KeyError, ValueError) as exc:
+                logger.warning(
+                    "Skipping invalid fixture entry %r: %s", entry, exc,
+                )
+
+        if not fixtures:
+            logger.warning(
+                "No valid fixtures in %s — using default layout", path,
+            )
+            return cls()
+
+        logger.info("Loaded %d fixtures from %s", len(fixtures), path)
+        return cls(fixtures=fixtures)
+
+    def save_to_json(self, path: Path) -> None:
+        """Export the current fixture layout to a JSON file.
+
+        Args:
+            path: Destination file path. Parent directories are created
+                if they do not exist.
+        """
+        entries: list[dict[str, Any]] = []
+        for f in self.all:
+            entries.append({
+                "fixture_id": f.fixture_id,
+                "fixture_type": f.fixture_type.value,
+                "position": list(f.position),
+                "role": f.role.value,
+                "groups": sorted(f.groups),
+                "name": f.name,
+            })
+
+        data = {
+            "room": {
+                "width": ROOM_WIDTH,
+                "depth": ROOM_DEPTH,
+                "height": ROOM_HEIGHT,
+            },
+            "fixtures": entries,
+        }
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8",
+        )
+        logger.info("Saved %d fixtures to %s", len(entries), path)
 
     # ─── Access ──────────────────────────────────────────────────
 
@@ -406,3 +488,28 @@ def _default_fixtures() -> list[FixtureInfo]:
             name="Laser",
         ),
     ]
+
+
+def _fixture_from_dict(d: dict[str, Any]) -> FixtureInfo:
+    """Deserialize a single fixture entry from a JSON dict.
+
+    Args:
+        d: Dictionary with keys matching FixtureInfo fields.
+            ``fixture_type`` and ``role`` are strings matching enum values.
+
+    Returns:
+        Parsed FixtureInfo.
+
+    Raises:
+        KeyError: If a required key is missing.
+        ValueError: If an enum value is invalid.
+    """
+    pos = d["position"]
+    return FixtureInfo(
+        fixture_id=int(d["fixture_id"]),
+        fixture_type=FixtureType(d["fixture_type"]),
+        position=(float(pos[0]), float(pos[1]), float(pos[2])),
+        role=FixtureRole(d["role"]),
+        groups=set(d.get("groups", [])),
+        name=str(d.get("name", "")),
+    )

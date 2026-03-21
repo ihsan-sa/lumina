@@ -1,0 +1,242 @@
+{
+  "room": {
+    "width": 5.0,
+    "depth": 7.0,
+    "height": 2.5
+  },
+  "fixtures": [
+    {
+      "fixture_id": 1,
+      "fixture_type": "par",
+      "position": [
+        0.0,
+        1.4,
+        2.0
+      ],
+      "role": "left",
+      "groups": [
+        "left",
+        "par_all",
+        "par_left"
+      ],
+      "name": "Par L1"
+    },
+    {
+      "fixture_id": 2,
+      "fixture_type": "par",
+      "position": [
+        0.0,
+        2.8,
+        2.1
+      ],
+      "role": "left",
+      "groups": [
+        "left",
+        "par_all",
+        "par_left"
+      ],
+      "name": "Par L2"
+    },
+    {
+      "fixture_id": 3,
+      "fixture_type": "par",
+      "position": [
+        0.0,
+        4.2,
+        2.2
+      ],
+      "role": "left",
+      "groups": [
+        "left",
+        "par_all",
+        "par_left"
+      ],
+      "name": "Par L3"
+    },
+    {
+      "fixture_id": 4,
+      "fixture_type": "par",
+      "position": [
+        0.0,
+        5.6,
+        2.3
+      ],
+      "role": "left",
+      "groups": [
+        "left",
+        "par_all",
+        "par_left"
+      ],
+      "name": "Par L4"
+    },
+    {
+      "fixture_id": 5,
+      "fixture_type": "par",
+      "position": [
+        5.0,
+        1.4,
+        2.0
+      ],
+      "role": "right",
+      "groups": [
+        "par_all",
+        "par_right",
+        "right"
+      ],
+      "name": "Par R1"
+    },
+    {
+      "fixture_id": 6,
+      "fixture_type": "par",
+      "position": [
+        5.0,
+        2.8,
+        2.1
+      ],
+      "role": "right",
+      "groups": [
+        "par_all",
+        "par_right",
+        "right"
+      ],
+      "name": "Par R2"
+    },
+    {
+      "fixture_id": 7,
+      "fixture_type": "par",
+      "position": [
+        5.0,
+        4.2,
+        2.2
+      ],
+      "role": "right",
+      "groups": [
+        "par_all",
+        "par_right",
+        "right"
+      ],
+      "name": "Par R3"
+    },
+    {
+      "fixture_id": 8,
+      "fixture_type": "par",
+      "position": [
+        5.0,
+        5.6,
+        2.3
+      ],
+      "role": "right",
+      "groups": [
+        "par_all",
+        "par_right",
+        "right"
+      ],
+      "name": "Par R4"
+    },
+    {
+      "fixture_id": 9,
+      "fixture_type": "strobe",
+      "position": [
+        0.3,
+        0.3,
+        2.4
+      ],
+      "role": "front_left",
+      "groups": [
+        "strobe_corners",
+        "strobe_left"
+      ],
+      "name": "Strobe FL"
+    },
+    {
+      "fixture_id": 10,
+      "fixture_type": "strobe",
+      "position": [
+        4.7,
+        0.3,
+        2.4
+      ],
+      "role": "front_right",
+      "groups": [
+        "strobe_corners",
+        "strobe_right"
+      ],
+      "name": "Strobe FR"
+    },
+    {
+      "fixture_id": 11,
+      "fixture_type": "strobe",
+      "position": [
+        0.3,
+        6.7,
+        2.4
+      ],
+      "role": "back_left",
+      "groups": [
+        "strobe_corners",
+        "strobe_left"
+      ],
+      "name": "Strobe BL"
+    },
+    {
+      "fixture_id": 12,
+      "fixture_type": "strobe",
+      "position": [
+        4.7,
+        6.7,
+        2.4
+      ],
+      "role": "back_right",
+      "groups": [
+        "strobe_corners",
+        "strobe_right"
+      ],
+      "name": "Strobe BR"
+    },
+    {
+      "fixture_id": 13,
+      "fixture_type": "led_bar",
+      "position": [
+        2.5,
+        2.3333333333333335,
+        2.5
+      ],
+      "role": "center",
+      "groups": [
+        "center",
+        "overhead"
+      ],
+      "name": "Bar Front"
+    },
+    {
+      "fixture_id": 14,
+      "fixture_type": "led_bar",
+      "position": [
+        2.5,
+        4.666666666666667,
+        2.5
+      ],
+      "role": "center",
+      "groups": [
+        "center",
+        "overhead"
+      ],
+      "name": "Bar Rear"
+    },
+    {
+      "fixture_id": 15,
+      "fixture_type": "laser",
+      "position": [
+        2.5,
+        7.0,
+        2.4
+      ],
+      "role": "back",
+      "groups": [
+        "back",
+        "laser"
+      ],
+      "name": "Laser"
+    }
+  ]
+}

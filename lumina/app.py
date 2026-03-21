@@ -15,7 +15,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
-import socket
+import signal
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +37,8 @@ from lumina.audio.segment_classifier import SegmentClassifier, SegmentFrame
 from lumina.audio.source_separator import SourceSeparator
 from lumina.audio.structural_analyzer import StructuralAnalyzer
 from lumina.audio.vocal_detector import VocalDetector, VocalFrame
-from lumina.control.protocol import FixtureCommand, encode_packet
+from lumina.control.network import NetworkManager
+from lumina.control.protocol import FixtureCommand
 from lumina.lighting.engine import LightingEngine
 from lumina.web.server import LuminaServer
 
@@ -133,6 +134,11 @@ class LuminaApp:
         config: Application configuration.
     """
 
+    # Maximum number of audio reconnection attempts before giving up.
+    _MAX_AUDIO_RETRIES: int = 5
+    # Seconds to wait between audio reconnection attempts.
+    _AUDIO_RETRY_DELAY: float = 2.0
+
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._server = LuminaServer(host=config.host, port=config.port)
@@ -140,8 +146,8 @@ class LuminaApp:
         self._music_states: list[MusicState] = []
         self._frame_index = 0
         self._playing = True
-        self._udp_socket: socket.socket | None = None
-        self._udp_addr: tuple[str, int] | None = None
+        self._network: NetworkManager | None = None
+        self._shutdown_event: asyncio.Event = asyncio.Event()
         self._global_intensity: float = 0.8
         self._manual_effect: str | None = None
         self._manual_effect_start: float = 0.0
@@ -149,17 +155,60 @@ class LuminaApp:
 
         if config.udp_target:
             host, port_str = config.udp_target.rsplit(":", 1)
-            self._udp_addr = (host, int(port_str))
-            self._udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._network = NetworkManager(
+                target_fps=config.fps, port=int(port_str),
+            )
+            self._network.set_broadcast_target(host, int(port_str))
 
     async def run(self) -> None:
-        """Main entry point — run analysis and start output loop."""
-        if self._config.mode == "file":
-            await self._run_file_mode()
-        elif self._config.mode == "showcase":
-            await self._run_showcase_mode()
-        elif self._config.mode == "live":
-            await self._run_live_mode()
+        """Main entry point — run analysis and start output loop.
+
+        Installs signal handlers for SIGINT/SIGTERM to trigger graceful
+        shutdown across all operating modes.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _signal_handler() -> None:
+            logger.info("Shutdown signal received — initiating graceful shutdown")
+            self._shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(sig, _signal_handler)
+
+        # Start NetworkManager if configured
+        if self._network is not None:
+            await self._network.start()
+
+        try:
+            if self._config.mode == "file":
+                await self._run_file_mode()
+            elif self._config.mode == "showcase":
+                await self._run_showcase_mode()
+            elif self._config.mode == "live":
+                await self._run_live_mode()
+        finally:
+            await self._shutdown()
+
+    async def _shutdown(self) -> None:
+        """Graceful shutdown: stop audio, flush network, close servers.
+
+        Cleanup sequence:
+        1. Signal shutdown event (stops loops)
+        2. Flush pending commands via NetworkManager
+        3. Stop NetworkManager (closes UDP socket)
+        4. Stop WebSocket server
+        """
+        logger.info("Running graceful shutdown sequence...")
+        self._shutdown_event.set()
+
+        if self._network is not None:
+            await self._network.stop()
+            logger.info("NetworkManager stopped")
+
+        await self._server.stop()
+        logger.info("WebSocket server stopped")
+        logger.info("Shutdown complete")
 
     async def _run_showcase_mode(self) -> None:
         """Start server immediately for pattern showcase — no audio analysis."""
@@ -169,7 +218,6 @@ class LuminaApp:
             await self._idle_loop()
         finally:
             transport_task.cancel()
-            await self._server.stop()
 
     async def _run_live_mode(self) -> None:
         """Live audio capture and real-time analysis (Mode A).
@@ -177,6 +225,10 @@ class LuminaApp:
         Captures system audio via sounddevice loopback, runs streaming
         analyzers on each audio chunk, generates lighting commands per
         frame, and pushes them to the WebSocket server in real time.
+
+        Includes error recovery: if the audio device is lost, the system
+        retries up to ``_MAX_AUDIO_RETRIES`` times with a
+        ``_AUDIO_RETRY_DELAY`` second delay between attempts.
 
         Latency target: ~100-200ms (capture block + analysis).
         """
@@ -187,31 +239,6 @@ class LuminaApp:
         block_size = sr // fps  # One block per frame
         frame_interval = 1.0 / fps
 
-        # Create streaming analyzers
-        beat_detector = BeatDetector(sr=sr, fps=fps)
-        energy_tracker = EnergyTracker(sr=sr, fps=fps)
-        onset_detector = OnsetDetector(sr=sr, fps=fps)
-        vocal_detector = VocalDetector(sr=sr, fps=fps)
-        genre_classifier = GenreClassifier(fps=fps)
-        drop_predictor = DropPredictor(fps=fps)
-        segment_classifier = SegmentClassifier(fps=fps)
-
-        # Audio callback deposits chunks into an asyncio queue
-        audio_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=16)
-        loop = asyncio.get_running_loop()
-
-        def _audio_callback(
-            indata: np.ndarray,
-            frames: int,
-            time_info: object,
-            status: sd.CallbackFlags,
-        ) -> None:
-            if status:
-                logger.warning("Audio callback status: %s", status)
-            mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy().flatten()
-            with contextlib.suppress(asyncio.QueueFull):
-                loop.call_soon_threadsafe(audio_queue.put_nowait, mono)
-
         # Apply genre override at engine level if configured
         if self._config.genre_override:
             self._engine.set_genre_override(self._config.genre_override)
@@ -220,123 +247,250 @@ class LuminaApp:
         await self._server.start()
         transport_task = asyncio.create_task(self._handle_transport())
 
-        logger.info("Starting live audio capture (sr=%d, block=%d)", sr, block_size)
-
         try:
-            stream = sd.InputStream(
-                samplerate=sr,
-                blocksize=block_size,
-                channels=1,
-                dtype="float32",
-                callback=_audio_callback,
-            )
-            stream.start()
-            logger.info("Live audio stream started")
-
-            seq = 0
-            timestamp = 0.0
-
-            while True:
-                # Wait for next audio chunk
-                chunk = await audio_queue.get()
-                t0 = time.monotonic()
-                timestamp += len(chunk) / sr
-
-                # Run streaming analyzers
-                beat_frames = beat_detector.process_chunk(chunk)
-                energy_frames = energy_tracker.process_chunk(chunk)
-                onset_frames = onset_detector.process_chunk(chunk)
-                vocal_frames = vocal_detector.process_chunk(chunk)
-
-                # Align frame counts (take minimum)
-                n = min(
-                    len(beat_frames),
-                    len(energy_frames),
-                    len(onset_frames),
-                    len(vocal_frames),
-                )
-                if n == 0:
-                    continue
-
-                for i in range(n):
-                    beat = beat_frames[i]
-                    energy = energy_frames[i]
-                    onset = onset_frames[i]
-                    vocal = vocal_frames[i]
-                    has_onset = onset is not None
-
-                    # Frame-level classifiers
-                    drop = drop_predictor.process_frame(
-                        energy.energy,
-                        energy.energy_derivative,
-                        energy.spectral_centroid,
-                        energy.sub_bass_energy,
-                        vocal.vocal_energy,
-                        has_onset,
-                    )
-                    genre = genre_classifier.process_frame(
-                        energy.energy,
-                        energy.spectral_centroid,
-                        energy.sub_bass_energy,
-                        has_onset,
-                        vocal.vocal_energy,
-                        drop.drop_probability,
-                    )
-                    segment = segment_classifier.process_frame(
-                        energy.energy,
-                        energy.energy_derivative,
-                        energy.spectral_centroid,
-                        energy.sub_bass_energy,
-                        vocal.vocal_energy,
-                        has_onset,
-                    )
-
-                    frame_time = timestamp - (n - i - 1) * frame_interval
-                    state = _assemble_music_state(
-                        timestamp=frame_time,
-                        beat=beat,
-                        energy=energy,
-                        onset=onset,
-                        vocal=vocal,
-                        segment=segment,
-                        genre=genre,
-                        drop=drop,
-                    )
-
-                    commands = self._engine.generate(state)
-                    commands = self._apply_effects(commands, state)
-
-                    with contextlib.suppress(asyncio.QueueFull):
-                        self._server.state_queue.put_nowait((state, commands))
-
-                    # Optional UDP output
-                    if self._udp_socket and self._udp_addr:
-                        seq = (seq + 1) & 0xFFFF
-                        ts_ms = int(frame_time * 1000) & 0xFFFF
-                        packet = encode_packet(
-                            commands, sequence=seq, timestamp_ms=ts_ms
-                        )
-                        self._udp_socket.sendto(packet, self._udp_addr)
-
-                # Debug logging (once per second)
-                if self._config.debug:
-                    gen_ms = (time.monotonic() - t0) * 1000
-                    if int(timestamp) != int(timestamp - len(chunk) / sr):
-                        logger.info(
-                            "LIVE t=%.1f n=%d gen=%.1fms qsize=%d",
-                            timestamp, n, gen_ms, audio_queue.qsize(),
-                        )
-
-        except Exception:
-            logger.exception("Live audio error")
+            await self._live_capture_loop(sd, sr, fps, block_size, frame_interval)
         finally:
-            if "stream" in locals():
-                stream.stop()
-                stream.close()
             transport_task.cancel()
-            await self._server.stop()
-            if self._udp_socket is not None:
-                self._udp_socket.close()
+
+    async def _live_capture_loop(
+        self,
+        sd: Any,
+        sr: int,
+        fps: int,
+        block_size: int,
+        frame_interval: float,
+    ) -> None:
+        """Run the live audio capture loop with automatic reconnection.
+
+        Args:
+            sd: The ``sounddevice`` module (imported lazily by caller).
+            sr: Sample rate in Hz.
+            fps: Target frames per second.
+            block_size: Audio samples per frame.
+            frame_interval: Seconds per frame (1/fps).
+        """
+        retries = 0
+
+        while retries <= self._MAX_AUDIO_RETRIES and not self._shutdown_event.is_set():
+            # Create fresh streaming analyzers on each connection attempt
+            beat_detector = BeatDetector(sr=sr, fps=fps)
+            energy_tracker = EnergyTracker(sr=sr, fps=fps)
+            onset_detector = OnsetDetector(sr=sr, fps=fps)
+            vocal_detector = VocalDetector(sr=sr, fps=fps)
+            genre_classifier = GenreClassifier(fps=fps)
+            drop_predictor = DropPredictor(fps=fps)
+            segment_classifier = SegmentClassifier(fps=fps)
+
+            audio_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=16)
+            loop = asyncio.get_running_loop()
+
+            def _make_audio_callback(
+                ev_loop: asyncio.AbstractEventLoop,
+                queue: asyncio.Queue[np.ndarray],
+            ) -> Any:
+                def _cb(
+                    indata: np.ndarray,
+                    frames: int,
+                    time_info: object,
+                    status: Any,
+                ) -> None:
+                    try:
+                        if status:
+                            logger.warning("Audio callback status: %s", status)
+                        mono = (
+                            indata[:, 0].copy()
+                            if indata.ndim > 1
+                            else indata.copy().flatten()
+                        )
+                        with contextlib.suppress(asyncio.QueueFull):
+                            ev_loop.call_soon_threadsafe(
+                                queue.put_nowait, mono,
+                            )
+                    except Exception:
+                        logger.exception("Error in audio callback")
+                return _cb
+
+            audio_callback = _make_audio_callback(loop, audio_queue)
+
+            stream = None
+            try:
+                logger.info(
+                    "Starting live audio capture (sr=%d, block=%d, attempt=%d)",
+                    sr, block_size, retries + 1,
+                )
+                stream = sd.InputStream(
+                    samplerate=sr,
+                    blocksize=block_size,
+                    channels=1,
+                    dtype="float32",
+                    callback=audio_callback,
+                )
+                stream.start()
+                logger.info("Live audio stream started")
+
+                # Reset retry counter on successful start
+                retries = 0
+                timestamp = 0.0
+
+                await self._live_process_frames(
+                    audio_queue, sr, fps, frame_interval, timestamp,
+                    beat_detector, energy_tracker, onset_detector,
+                    vocal_detector, genre_classifier, drop_predictor,
+                    segment_classifier,
+                )
+                # If _live_process_frames returns normally, shutdown was requested
+                break
+
+            except Exception:
+                retries += 1
+                logger.exception(
+                    "Live audio error (attempt %d/%d)",
+                    retries, self._MAX_AUDIO_RETRIES,
+                )
+                if retries > self._MAX_AUDIO_RETRIES:
+                    logger.error(
+                        "Max audio reconnection attempts (%d) exceeded — "
+                        "giving up",
+                        self._MAX_AUDIO_RETRIES,
+                    )
+                    break
+                logger.info(
+                    "Retrying audio capture in %.1fs...",
+                    self._AUDIO_RETRY_DELAY,
+                )
+                await asyncio.sleep(self._AUDIO_RETRY_DELAY)
+            finally:
+                if stream is not None:
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception:
+                        logger.exception("Error closing audio stream")
+
+    async def _live_process_frames(
+        self,
+        audio_queue: asyncio.Queue[np.ndarray],
+        sr: int,
+        fps: int,
+        frame_interval: float,
+        timestamp: float,
+        beat_detector: BeatDetector,
+        energy_tracker: EnergyTracker,
+        onset_detector: OnsetDetector,
+        vocal_detector: VocalDetector,
+        genre_classifier: GenreClassifier,
+        drop_predictor: DropPredictor,
+        segment_classifier: SegmentClassifier,
+    ) -> None:
+        """Process audio frames from the queue until shutdown.
+
+        Args:
+            audio_queue: Queue receiving audio chunks from the callback.
+            sr: Sample rate.
+            fps: Target frames per second.
+            frame_interval: Seconds per frame.
+            timestamp: Starting timestamp.
+            beat_detector: Beat detection analyzer.
+            energy_tracker: Energy analysis analyzer.
+            onset_detector: Onset detection analyzer.
+            vocal_detector: Vocal detection analyzer.
+            genre_classifier: Genre classification analyzer.
+            drop_predictor: Drop prediction analyzer.
+            segment_classifier: Segment classification analyzer.
+        """
+        while not self._shutdown_event.is_set():
+            # Use wait_for so we can check shutdown periodically
+            try:
+                chunk = await asyncio.wait_for(
+                    audio_queue.get(), timeout=1.0,
+                )
+            except TimeoutError:
+                continue
+
+            t0 = time.monotonic()
+            timestamp += len(chunk) / sr
+
+            # Run streaming analyzers
+            beat_frames = beat_detector.process_chunk(chunk)
+            energy_frames = energy_tracker.process_chunk(chunk)
+            onset_frames = onset_detector.process_chunk(chunk)
+            vocal_frames = vocal_detector.process_chunk(chunk)
+
+            # Align frame counts (take minimum)
+            n = min(
+                len(beat_frames),
+                len(energy_frames),
+                len(onset_frames),
+                len(vocal_frames),
+            )
+            if n == 0:
+                continue
+
+            for i in range(n):
+                beat = beat_frames[i]
+                energy = energy_frames[i]
+                onset = onset_frames[i]
+                vocal = vocal_frames[i]
+                has_onset = onset is not None
+
+                # Frame-level classifiers
+                drop = drop_predictor.process_frame(
+                    energy.energy,
+                    energy.energy_derivative,
+                    energy.spectral_centroid,
+                    energy.sub_bass_energy,
+                    vocal.vocal_energy,
+                    has_onset,
+                )
+                genre = genre_classifier.process_frame(
+                    energy.energy,
+                    energy.spectral_centroid,
+                    energy.sub_bass_energy,
+                    has_onset,
+                    vocal.vocal_energy,
+                    drop.drop_probability,
+                )
+                segment = segment_classifier.process_frame(
+                    energy.energy,
+                    energy.energy_derivative,
+                    energy.spectral_centroid,
+                    energy.sub_bass_energy,
+                    vocal.vocal_energy,
+                    has_onset,
+                )
+
+                frame_time = timestamp - (n - i - 1) * frame_interval
+                state = _assemble_music_state(
+                    timestamp=frame_time,
+                    beat=beat,
+                    energy=energy,
+                    onset=onset,
+                    vocal=vocal,
+                    segment=segment,
+                    genre=genre,
+                    drop=drop,
+                )
+
+                commands = self._engine.generate(state)
+                commands = self._apply_effects(commands, state)
+
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._server.state_queue.put_nowait((state, commands))
+
+                # Optional UDP output via NetworkManager
+                if self._network is not None:
+                    await self._network.send_commands(
+                        commands, timestamp=frame_time,
+                    )
+
+            # Debug logging (once per second)
+            if self._config.debug:
+                gen_ms = (time.monotonic() - t0) * 1000
+                if int(timestamp) != int(timestamp - len(chunk) / sr):
+                    logger.info(
+                        "LIVE t=%.1f n=%d gen=%.1fms qsize=%d",
+                        timestamp, n, gen_ms, audio_queue.qsize(),
+                    )
 
     async def _run_file_mode(self) -> None:
         """Offline analysis + playback at fps rate.
@@ -532,9 +686,6 @@ class LuminaApp:
             await self._idle_loop()
         finally:
             transport_task.cancel()
-            await self._server.stop()
-            if self._udp_socket is not None:
-                self._udp_socket.close()
 
     async def _output_loop(self) -> None:
         """Play back pre-computed MusicState list at fps rate.
@@ -546,12 +697,11 @@ class LuminaApp:
         """
         frame_interval = 1.0 / self._config.fps
         n = len(self._music_states)
-        seq = 0
 
         # Absolute time reference — frame 0 plays at base_time
         base_time = time.monotonic()
 
-        while self._frame_index < n:
+        while self._frame_index < n and not self._shutdown_event.is_set():
             if not self._playing:
                 await asyncio.sleep(0.05)
                 # Re-anchor so we don't fast-forward after unpause
@@ -622,12 +772,11 @@ class LuminaApp:
             with contextlib.suppress(asyncio.QueueFull):
                 self._server.state_queue.put_nowait((state, commands))
 
-            # Optional UDP to physical fixtures
-            if self._udp_socket and self._udp_addr:
-                seq = (seq + 1) & 0xFFFF
-                ts_ms = int(state.timestamp * 1000) & 0xFFFF
-                packet = encode_packet(commands, sequence=seq, timestamp_ms=ts_ms)
-                self._udp_socket.sendto(packet, self._udp_addr)
+            # Optional UDP to physical fixtures via NetworkManager
+            if self._network is not None:
+                await self._network.send_commands(
+                    commands, timestamp=state.timestamp,
+                )
 
             self._frame_index += 1
 
@@ -652,7 +801,7 @@ class LuminaApp:
         base_offset = self._music_states[-1].timestamp if self._music_states else 0.0
         frame_count = 0
 
-        while True:
+        while not self._shutdown_event.is_set():
             frame_count += 1
             timestamp = base_offset + frame_count * frame_interval
 
