@@ -168,6 +168,7 @@ class FrenchMelodicProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Track segment transitions
@@ -201,28 +202,28 @@ class FrenchMelodicProfile(BaseProfile):
                     note_cmds[f.fixture_id] = make_command(f, BLACK, 0.0)
                 for f in self._lasers:
                     note_cmds[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
-                return self._merge_commands(note_cmds)
+                return self._apply_headroom(self._merge_commands(note_cmds))
 
         # ─── Segment-based routing ──────────────────────────────────
 
         if segment == "drop":
             self._note_patterns("drop")
-            return self._drop(state)
+            return self._apply_headroom(self._drop(state))
 
         if segment == "chorus":
             self._note_patterns("chorus")
-            return self._chorus(state)
+            return self._apply_headroom(self._chorus(state))
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         self._note_patterns("verse")
-        return self._verse(state)
+        return self._apply_headroom(self._verse(state))
 
     # ─── Segment handlers ────────────────────────────────────────────
 
@@ -245,8 +246,10 @@ class FrenchMelodicProfile(BaseProfile):
         # Color adapts to spectral character
         verse_color = self._warm_color(state)
 
-        # Chase speed boosted by hi-hat bumps
-        base_speed = 0.8 + energy * 0.4
+        # Chase speed: notes_per_beat accelerates the bounce (hi-hat feel)
+        notes_per_beat = getattr(state, "notes_per_beat", 0)
+        note_speed_boost = notes_per_beat * 0.15 if notes_per_beat > 0 else 0.0
+        base_speed = 0.8 + energy * 0.4 + note_speed_boost
         hihat_boost = self._bump.get_intensity(
             "chase_speed", state.timestamp, peak=0.6, floor=0.0,
         )

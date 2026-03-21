@@ -102,22 +102,23 @@ class GenericProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breathing")
-            return self._breathing(state)
+            return self._apply_headroom(self._breathing(state))
 
         if segment == "drop":
             self._note_patterns("drop")
-            return self._drop(state)
+            return self._apply_headroom(self._drop(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("gentle")
-            return self._gentle(state)
+            return self._apply_headroom(self._gentle(state))
 
         self._note_patterns("reactive")
-        return self._reactive(state)
+        return self._apply_headroom(self._reactive(state))
 
     # ─── Segment handlers ──────────────────────────────────────────
 
@@ -147,11 +148,16 @@ class GenericProfile(BaseProfile):
         color = self._cycle_color(state)
         color = self._color_temperature(state.spectral_centroid, color, GENTLE_CYAN)
 
-        # Fixture escalation
-        active_pars = select_active_fixtures(
-            self._pars, state.energy,
-            low_count=3, mid_count=6, high_threshold=0.7,
-        )
+        # Fixture escalation: layer-aware when available
+        layer_count = getattr(state, "layer_count", 0)
+        if layer_count > 0:
+            n = self._active_fixture_count(state, len(self._pars))
+            active_pars = self._pars_lr[:n]
+        else:
+            active_pars = select_active_fixtures(
+                self._pars, state.energy,
+                low_count=3, mid_count=6, high_threshold=0.7,
+            )
 
         if state.segment == "chorus":
             # Chase L→R at medium speed

@@ -217,3 +217,64 @@ class TestChorusAlternate:
         assert active >= len(_par_ids()) // 2, (
             f"Chorus should have at least half the pars active, got {active}"
         )
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestFrenchHardHeadroom:
+    """headroom scaling in french_hard."""
+
+    def test_headroom_half_reduces_verse(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue + c.white for c in full)
+        half_sum = sum(c.red + c.green + c.blue + c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+    def test_drop_bypasses_headroom(self) -> None:
+        """Drops in french_hard bypass headroom scaling."""
+        p = _profile()
+        cmds = p.generate(_state(segment="drop", energy=0.9, headroom=0.3))
+        # Drop should still produce bright output
+        total = sum(c.red + c.green + c.blue + c.white for c in cmds)
+        assert total > 500, f"Drop should be bright even at low headroom, got {total}"
+
+
+class TestFrenchHardMotifRepetition:
+    """motif_repetition increases strobe intensity on repeated sections."""
+
+    def test_high_repetition_strobes_on_beat(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="chorus", energy=0.7, is_beat=True,
+            motif_repetition=4, motif_id=1,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        any_strobe = any(
+            cmd_map[sid].strobe_rate > 0 for sid in _strobe_ids()
+        )
+        assert any_strobe, "Repeated motif should fire strobes on beats in chorus"
+
+    def test_low_repetition_normal_behavior(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="chorus", energy=0.5, is_beat=True,
+            motif_repetition=0,
+        ))
+        assert len(cmds) == 15
+
+
+class TestFrenchHardLayerCount:
+    """layer_count controls symmetry pair count."""
+
+    def test_low_layer_count_fewer_fixtures(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, layer_count=1))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        lit = [pid for pid in _par_ids()
+               if cmd_map[pid].red > 0 or cmd_map[pid].blue > 0 or cmd_map[pid].white > 0]
+        assert len(lit) <= 4, f"Low layer_count should mean fewer lit pars, got {len(lit)}"

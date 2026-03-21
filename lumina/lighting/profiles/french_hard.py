@@ -168,6 +168,7 @@ class FrenchHardProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Track segment transitions
@@ -195,29 +196,29 @@ class FrenchHardProfile(BaseProfile):
                     note_cmds[f.fixture_id] = make_command(f, BLACK, 0.0)
                 for f in self._lasers:
                     note_cmds[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
-                return self._merge_commands(note_cmds)
+                return self._apply_headroom(self._merge_commands(note_cmds))
 
         # --- Segment-based routing ---
 
         if segment == "drop":
             self._note_patterns("drop")
-            return self._drop(state)
+            return self._drop(state)  # drops bypass headroom
 
         if segment == "chorus":
             self._note_patterns("chorus")
-            return self._chorus(state)
+            return self._apply_headroom(self._chorus(state))
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         # Default: verse
         self._note_patterns("verse")
-        return self._verse(state)
+        return self._apply_headroom(self._verse(state))
 
     # --- Segment handlers ---------------------------------------------------
 
@@ -318,13 +319,26 @@ class FrenchHardProfile(BaseProfile):
         )
         commands.update(par_cmds)
 
+        # Motif repetition: increase strobe intensity on repeated sections
+        motif_rep = getattr(state, "motif_repetition", 0)
+        strobe_intensity_boost = min(55, motif_rep * 15) if motif_rep > 1 else 0
+
         # Kick: full strobe burst on every kick
         if state.onset_type == "kick":
             self._bump.trigger("pars", state.timestamp)
             burst = strobe_burst(
                 self._strobes, state, state.timestamp, COLD_WHITE,
+                burst_intensity=min(255, 200 + strobe_intensity_boost),
             )
             commands.update(burst)
+        elif motif_rep > 2 and state.is_beat:
+            # Repeated motifs: strobe on every beat (not just kicks)
+            for f in self._strobes:
+                commands[f.fixture_id] = make_command(
+                    f, COLD_WHITE,
+                    strobe_rate=min(255, 150 + strobe_intensity_boost),
+                    strobe_intensity=min(255, 160 + strobe_intensity_boost),
+                )
         else:
             for f in self._strobes:
                 commands[f.fixture_id] = make_command(f, BLACK, 0.0)

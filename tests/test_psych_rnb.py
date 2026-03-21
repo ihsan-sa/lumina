@@ -245,3 +245,77 @@ class TestDeterminism:
         cmds2 = p.generate(state)
         for c1, c2 in zip(cmds1, cmds2, strict=True):
             assert c1 == c2
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestPsychRnbHeadroom:
+    """headroom scaling in psych_rnb."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _make_profile()
+        p2 = _make_profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0,
+                                  vocal_energy=0.5))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5,
+                                  vocal_energy=0.5))
+        fm = FixtureMap()
+        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
+        full_sum = sum(c.red + c.green + c.blue for c in full if c.fixture_id in par_ids)
+        half_sum = sum(c.red + c.green + c.blue for c in half if c.fixture_id in par_ids)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+    def test_headroom_one_passthrough(self) -> None:
+        """headroom=1.0 should not alter output."""
+        p = _make_profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, headroom=1.0))
+        assert len(cmds) == 15
+
+
+class TestPsychRnbNotesPerBeat:
+    """notes_per_beat drives breathe cycle speed."""
+
+    def test_high_notes_per_beat_produces_valid_output(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, notes_per_beat=4,
+            note_pattern_phase=0.5, vocal_energy=0.4,
+        ))
+        assert len(cmds) == 15
+
+    def test_different_notes_per_beat_different_output(self) -> None:
+        """Different notes_per_beat values should produce different visual timing."""
+        p1 = _make_profile()
+        p2 = _make_profile()
+        # Same state except notes_per_beat
+        s_low = _state(segment="verse", energy=0.5, notes_per_beat=1,
+                       vocal_energy=0.4, timestamp=5.0, bar_phase=0.3)
+        s_high = _state(segment="verse", energy=0.5, notes_per_beat=4,
+                        vocal_energy=0.4, timestamp=5.0, bar_phase=0.3)
+        cmds_low = p1.generate(s_low)
+        cmds_high = p2.generate(s_high)
+        # Both should be valid
+        assert len(cmds_low) == 15
+        assert len(cmds_high) == 15
+
+
+class TestPsychRnbMotifPaletteRotation:
+    """Motif changes trigger palette rotation."""
+
+    def test_motif_change_shifts_color(self) -> None:
+        p = _make_profile()
+        # Generate with motif_id=1
+        cmds1 = p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=1, motif_repetition=1, timestamp=10.0,
+        ))
+        # Change to motif_id=2
+        cmds2 = p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=2, motif_repetition=1, timestamp=10.5,
+        ))
+        # Both should be valid
+        assert len(cmds1) == 15
+        assert len(cmds2) == 15

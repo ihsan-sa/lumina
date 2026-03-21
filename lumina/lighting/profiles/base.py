@@ -705,6 +705,77 @@ class BaseProfile(ABC):
             w=color.w,
         )
 
+    # ─── Headroom & layer helpers ─────────────────────────────────
+
+    def _apply_headroom(self, commands: list[FixtureCommand]) -> list[FixtureCommand]:
+        """Scale RGB/W values of all commands by the current headroom.
+
+        Called as a final post-processing step to prevent "everything at max"
+        fatigue.  Headroom of 1.0 passes through unchanged; headroom of 0.5
+        halves all color channel values.  Strobe and special bytes are NOT
+        scaled — strobes should remain punchy regardless of headroom.
+
+        Args:
+            commands: Raw fixture commands from the profile.
+
+        Returns:
+            New list with RGB/W channels scaled by headroom.
+        """
+        if not commands:
+            return commands
+        # Infer headroom from the most recently processed state.
+        headroom = getattr(self, "_last_headroom", 1.0)
+        if headroom >= 0.99:
+            return commands
+
+        result: list[FixtureCommand] = []
+        for cmd in commands:
+            result.append(FixtureCommand(
+                fixture_id=cmd.fixture_id,
+                red=int(cmd.red * headroom),
+                green=int(cmd.green * headroom),
+                blue=int(cmd.blue * headroom),
+                white=int(cmd.white * headroom),
+                strobe_rate=cmd.strobe_rate,
+                strobe_intensity=cmd.strobe_intensity,
+                special=cmd.special,
+            ))
+        return result
+
+    def _active_fixture_count(
+        self, state: MusicState, total: int = 0
+    ) -> int:
+        """Determine how many fixtures should be active based on layer_count.
+
+        When layer_count is low (1-2), only a subset of fixtures should be
+        active — sparse instrumentation deserves sparse lighting.  When high
+        (3-4), use all available fixtures.
+
+        Args:
+            state: Current music state (reads layer_count and energy).
+            total: Total fixture pool size.  0 = use all pars.
+
+        Returns:
+            Number of fixtures to activate.
+        """
+        layer_count = getattr(state, "layer_count", 0)
+        if layer_count <= 0:
+            return total if total > 0 else len(self._map.by_type(FixtureType.PAR))
+        return self._layer_fixture_count(
+            layer_count, state.energy, total
+        )
+
+    def _store_headroom(self, state: MusicState) -> None:
+        """Cache headroom value for use by _apply_headroom().
+
+        Call this at the top of generate() so _apply_headroom() can read it
+        without needing the MusicState passed through.
+
+        Args:
+            state: Current music state.
+        """
+        self._last_headroom: float = getattr(state, "headroom", 1.0)
+
     # ─── Layer / motif / headroom hooks ───────────────────────────
 
     @property

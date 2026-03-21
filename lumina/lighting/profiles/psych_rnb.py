@@ -97,8 +97,17 @@ class PsychRnbProfile(BaseProfile):
         self._segment_transition_time: float = -1.0
         self._prev_commands: dict[int, FixtureCommand] = {}
 
+        # Motif-driven palette rotation state
+        self._last_motif_id: int | None = None
+        self._palette_rotation: float = 0.0
+
     def generate(self, state: MusicState) -> list[FixtureCommand]:
         """Generate psychedelic R&B fixture commands.
+
+        Extended MusicState integration:
+        - notes_per_beat drives breathe cycle speed (more notes = faster breathing)
+        - motif_id changes trigger slow color palette rotation
+        - headroom scales final output via _apply_headroom()
 
         Args:
             state: Current audio analysis frame.
@@ -107,12 +116,20 @@ class PsychRnbProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Detect segment transitions for crossfade
         if segment != self._last_segment:
             self._segment_transition_time = state.timestamp
             self._last_segment = segment
+
+        # Track motif changes for palette rotation
+        motif_id = getattr(state, "motif_id", None)
+        if motif_id is not None and motif_id != self._last_motif_id:
+            # Each new motif advances the palette rotation by 0.25 (quarter turn)
+            self._palette_rotation = (self._palette_rotation + 0.25) % 1.0
+            self._last_motif_id = motif_id
 
         # Generate commands for current segment
         if segment == "drop":
@@ -141,7 +158,7 @@ class PsychRnbProfile(BaseProfile):
         # Store for next frame's crossfade
         self._prev_commands = {cmd.fixture_id: cmd for cmd in current}
 
-        return current
+        return self._apply_headroom(current)
 
     # ─── Segment handlers ──────────────────────────────────────────
 
@@ -180,13 +197,22 @@ class PsychRnbProfile(BaseProfile):
         color = self._color_temperature(
             state.spectral_centroid, DEEP_PURPLE, NEON_CYAN,
         )
-        # Blend with the drifting wash palette for variety
-        wash = self._wash_color(state.timestamp, _VERSE_COLORS, 0.0)
+        # Blend with the drifting wash palette (motif changes rotate the palette)
+        wash = self._wash_color(
+            state.timestamp, _VERSE_COLORS, self._palette_rotation,
+        )
         color = lerp_color(wash, color, 0.4)
 
         # Sub-bass deepens purple
         if state.sub_bass_energy > 0.3:
             color = lerp_color(color, DEEP_PURPLE, state.sub_bass_energy * 0.5)
+
+        # Breathe period: notes_per_beat drives cycle speed
+        # More notes = faster breathing (8 bars base, down to 2 bars at high note density)
+        notes_per_beat = getattr(state, "notes_per_beat", 0)
+        breathe_period = (
+            max(2.0, 8.0 - notes_per_beat * 1.5) if notes_per_beat > 0 else 8.0
+        )
 
         # Swell: if energy is rising, use diverge
         if state.energy_derivative > 0.05:
@@ -202,7 +228,7 @@ class PsychRnbProfile(BaseProfile):
                 active_pars, state, state.timestamp, color,
                 min_intensity=base_intensity * 0.6,
                 max_intensity=base_intensity,
-                period_bars=8.0,
+                period_bars=breathe_period,
                 phase_offset_per_fixture=0.15,
             )
             commands.update(par_cmds)

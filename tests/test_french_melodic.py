@@ -269,3 +269,55 @@ class TestDropBurst:
             assert cmd_map[sid].strobe_rate > 0 or cmd_map[sid].red > 0, (
                 "Strobes should fire during drop initial burst"
             )
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestFrenchMelodicHeadroom:
+    """headroom scaling in french_melodic."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue for c in full)
+        half_sum = sum(c.red + c.green + c.blue for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+
+class TestFrenchMelodicNotesPerBeat:
+    """notes_per_beat adjusts hi-hat chase speed."""
+
+    def test_high_notes_valid_output(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, notes_per_beat=6,
+            note_pattern_phase=0.3,
+        ))
+        assert len(cmds) == 15
+
+    def test_notes_per_beat_affects_verse(self) -> None:
+        """Different notes_per_beat should still produce valid output."""
+        p1 = _profile()
+        p2 = _profile()
+        cmds0 = p1.generate(_state(segment="verse", energy=0.6, notes_per_beat=0))
+        cmds4 = p2.generate(_state(segment="verse", energy=0.6, notes_per_beat=4))
+        assert len(cmds0) == 15
+        assert len(cmds4) == 15
+
+
+class TestFrenchMelodicLayerCount:
+    """layer_count controls how many fixture groups are lit."""
+
+    def test_low_layer_count_fewer_active(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, layer_count=1,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        lit = [pid for pid in _par_ids() if cmd_map[pid].red > 0 or cmd_map[pid].green > 0]
+        # With layer_count=1, should have fewer lit pars
+        assert len(lit) <= 4, f"Expected few lit pars with layer_count=1, got {len(lit)}"

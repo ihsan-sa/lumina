@@ -189,3 +189,57 @@ class TestBreakdownBlackout:
             cmd = cmd_map[sid]
             total = cmd.red + cmd.green + cmd.blue + cmd.white + cmd.strobe_rate
             assert total == 0, f"Strobe {sid} should be fully dark in breakdown"
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestEuroAltHeadroom:
+    """headroom scaling in euro_alt."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.5, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.5, headroom=0.5))
+        full_sum = sum(c.white for c in full)
+        half_sum = sum(c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+
+class TestEuroAltLayerCountSparse:
+    """layer_count < 2 triggers extreme single-spotlight restraint."""
+
+    def test_sparse_single_fixture(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, layer_count=1))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        lit = [pid for pid in _par_ids() if cmd_map[pid].white > 0]
+        assert len(lit) <= 1, f"layer_count=1 should light at most 1 par, got {len(lit)}"
+
+    def test_layer_count_zero_normal(self) -> None:
+        """layer_count=0 means no data -- should not trigger sparse."""
+        p = _profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, layer_count=0))
+        assert len(cmds) == 15
+
+
+class TestEuroAltMotifTemperature:
+    """motif_id changes shift white temperature."""
+
+    def test_motif_change_produces_valid_output(self) -> None:
+        p = _profile()
+        # First motif
+        p.generate(_state(segment="verse", energy=0.5, motif_id=1, timestamp=1.0))
+        # Second motif -- should shift temperature
+        cmds = p.generate(_state(segment="verse", energy=0.5, motif_id=2, timestamp=2.0))
+        assert len(cmds) == 15
+
+    def test_same_motif_no_shift(self) -> None:
+        p = _profile()
+        cmds1 = p.generate(_state(segment="verse", energy=0.5, motif_id=1, timestamp=1.0))
+        cmds2 = p.generate(_state(segment="verse", energy=0.5, motif_id=1, timestamp=1.0))
+        # Same motif should produce same output
+        for c1, c2 in zip(cmds1, cmds2, strict=True):
+            assert c1 == c2

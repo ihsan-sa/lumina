@@ -261,3 +261,49 @@ class TestDeterminism:
         cmds2 = p.generate(state)
         for c1, c2 in zip(cmds1, cmds2, strict=True):
             assert c1 == c2
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestGenericHeadroom:
+    """headroom scaling in generic profile."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _make_profile()
+        p2 = _make_profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue + c.white for c in full)
+        half_sum = sum(c.red + c.green + c.blue + c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+    def test_headroom_one_passthrough(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, headroom=1.0))
+        assert len(cmds) == 15
+
+
+class TestGenericLayerCount:
+    """layer_count controls fixture selection in generic."""
+
+    def test_low_layer_count_fewer_fixtures(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(segment="verse", energy=0.5, layer_count=1))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        fm = FixtureMap()
+        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
+        lit = [pid for pid in par_ids
+               if cmd_map[pid].red > 0 or cmd_map[pid].green > 0 or cmd_map[pid].blue > 0]
+        assert len(lit) <= 4, f"Low layer_count should mean fewer lit pars, got {len(lit)}"
+
+    def test_high_layer_count_more_fixtures(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(segment="verse", energy=0.7, layer_count=4))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        fm = FixtureMap()
+        par_ids = {f.fixture_id for f in fm.by_type(FixtureType.PAR)}
+        lit = [pid for pid in par_ids
+               if cmd_map[pid].red > 0 or cmd_map[pid].green > 0 or cmd_map[pid].blue > 0]
+        assert len(lit) >= 3, f"High layer_count should mean more lit pars, got {len(lit)}"

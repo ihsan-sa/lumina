@@ -38,6 +38,7 @@ from lumina.lighting.profiles.base import (
     BaseProfile,
     BumpTracker,
     Color,
+    lerp_color,
 )
 
 # --- Euro Alt palette -------------------------------------------------------
@@ -80,6 +81,10 @@ class EuroAltProfile(BaseProfile):
         # Track accent reveals: fires every 8 bars on downbeat
         self._accent_bar_counter: int = 0
 
+        # Motif-driven temperature shift state
+        self._last_motif_id: int | None = None
+        self._white_temp_offset: float = 0.0
+
     @property
     def motif_pattern_preferences(self) -> list[str]:
         """Euro alt prefers restrained, spatial patterns for motifs."""
@@ -107,31 +112,103 @@ class EuroAltProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Count bars for accent reveal timing
         if state.is_downbeat:
             self._accent_bar_counter += 1
 
+        # Track motif changes for slow white temperature shift
+        motif_id = getattr(state, "motif_id", None)
+        if motif_id is not None and motif_id != self._last_motif_id:
+            # Each motif change shifts the warm/cool balance by 0.2
+            self._white_temp_offset = (self._white_temp_offset + 0.2) % 1.0
+            self._last_motif_id = motif_id
+
+        # Layer count < 2: extreme single-spotlight restraint (override segment)
+        layer_count = getattr(state, "layer_count", 0)
+        if (
+            layer_count > 0
+            and layer_count < 2
+            and segment not in ("drop",)
+        ):
+            self._note_patterns("sparse_single_spotlight")
+            return self._apply_headroom(self._sparse_single_spotlight(state))
+
         if segment == "drop":
             self._note_patterns("drop_converge")
-            return self._drop(state)
+            return self._apply_headroom(self._drop(state))
 
         if segment == "chorus":
             self._note_patterns("chorus_gradient")
-            return self._chorus(state)
+            return self._apply_headroom(self._chorus(state))
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown_blackout")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro_breathe")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         # Default: verse
         self._note_patterns("verse_spotlight")
-        return self._verse(state)
+        return self._apply_headroom(self._verse(state))
+
+    # --- Extended MusicState handlers ----------------------------------------
+
+    def _motif_white_color(self, state: MusicState) -> Color:
+        """Compute white color with motif-driven temperature shift.
+
+        Each new motif slowly shifts the warm/cool balance, giving each
+        musical theme a subtly different visual warmth.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Temperature-shifted white Color.
+        """
+        base = self._color_temperature(
+            state.spectral_centroid, WARM_WHITE, COOL_WHITE,
+        )
+        # Apply motif-driven temperature offset
+        if self._white_temp_offset > 0.01:
+            shifted = lerp_color(WARM_WHITE, COOL_WHITE, self._white_temp_offset)
+            base = lerp_color(base, shifted, 0.3)
+        return base
+
+    def _sparse_single_spotlight(self, state: MusicState) -> list[FixtureCommand]:
+        """Single spotlight when layer_count < 2 (extreme restraint).
+
+        One par at very low intensity. Everything else completely dark.
+        This is the most minimal state for euro_alt -- nearly invisible.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Fixture command list.
+        """
+        commands: dict[int, FixtureCommand] = {}
+
+        color = self._motif_white_color(state)
+
+        par_cmds = spotlight_isolate(
+            self._pars, state, state.timestamp, color,
+            target_index=0, intensity=0.15, dim_others=0.0,
+        )
+        commands.update(par_cmds)
+
+        for f in self._led_bars:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._strobes:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+
+        return self._merge_commands(commands)
 
     # --- Segment handlers ---------------------------------------------------
 
@@ -139,11 +216,12 @@ class EuroAltProfile(BaseProfile):
         """Verse: single rotating spotlight, extreme restraint.
 
         One par at a time at 20-30%. No strobes. LED bars at 5%.
+        Motif changes shift white temperature.
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Color temperature from spectral centroid
-        color = self._color_temperature(state.spectral_centroid, WARM_WHITE, COOL_WHITE)
+        # Color temperature from spectral centroid + motif-driven shift
+        color = self._motif_white_color(state)
 
         # Rotating spotlight: one par at a time, slow rotation
         n_pars = len(self._pars)
@@ -177,11 +255,12 @@ class EuroAltProfile(BaseProfile):
 
         Gradient_y (front-to-back brightness) using white. Every 8 bars
         on a downbeat, one par flashes ACCENT_REVEAL for 1 frame.
+        Motif changes shift white temperature.
         """
         commands: dict[int, FixtureCommand] = {}
 
-        # Color temperature from spectral centroid
-        color = self._color_temperature(state.spectral_centroid, WARM_WHITE, COOL_WHITE)
+        # Color temperature from spectral centroid + motif-driven shift
+        color = self._motif_white_color(state)
 
         # Select 2-3 pars based on energy
         active_pars = select_active_fixtures(

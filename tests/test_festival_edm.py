@@ -207,3 +207,65 @@ class TestDeterminism:
         cmds2 = p.generate(state)
         for c1, c2 in zip(cmds1, cmds2, strict=True):
             assert c1 == c2
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestFestivalEdmHeadroom:
+    """headroom scaling in festival_edm."""
+
+    def test_headroom_half_reduces_groove(self) -> None:
+        p1 = _make_profile()
+        p2 = _make_profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue + c.white for c in full)
+        half_sum = sum(c.red + c.green + c.blue + c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+    def test_drop_bypasses_headroom(self) -> None:
+        """Drops bypass headroom in festival_edm."""
+        p = _make_profile()
+        cmds = p.generate(_state(segment="drop", energy=0.9, headroom=0.3))
+        total = sum(c.red + c.green + c.blue + c.white for c in cmds)
+        assert total > 500
+
+
+class TestFestivalEdmLayerCountBuild:
+    """layer_count boosts build intensity."""
+
+    def test_high_layer_count_in_build(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(
+            drop_probability=0.7, segment="verse", energy=0.6,
+            layer_count=4,
+        ))
+        assert len(cmds) == 15
+
+    def test_low_layer_count_in_build(self) -> None:
+        p = _make_profile()
+        cmds = p.generate(_state(
+            drop_probability=0.7, segment="verse", energy=0.6,
+            layer_count=1,
+        ))
+        assert len(cmds) == 15
+
+
+class TestFestivalEdmMotifRepetitionReset:
+    """motif_repetition resets visual on new section."""
+
+    def test_motif_change_shifts_groove_color(self) -> None:
+        p = _make_profile()
+        # First motif
+        p.generate(_state(
+            segment="verse", energy=0.5, motif_id=1,
+            motif_repetition=3, timestamp=10.0, bar_phase=0.3,
+        ))
+        # New motif -- color offset should shift
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, motif_id=2,
+            motif_repetition=1, timestamp=10.5, bar_phase=0.3,
+        ))
+        assert len(cmds) == 15

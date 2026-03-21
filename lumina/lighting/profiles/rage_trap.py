@@ -149,8 +149,8 @@ class RageTrapProfile(BaseProfile):
 
         Decision hierarchy:
         1. Arc layer: headroom caps intensity (except drops)
-        2. Note pattern: if regular notes detected, cycle fixtures
-        3. Motif layer: if recognized motif, use assigned pattern
+        2. Motif repetition: escalate to strobe burst when crowd knows the part
+        3. Note pattern: if regular notes detected, cycle fixtures
         4. Segment layer: existing verse/chorus/drop routing
         5. Reactive layer: onset reactions capped by headroom
 
@@ -161,6 +161,7 @@ class RageTrapProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
         energy = state.energy
 
@@ -181,16 +182,57 @@ class RageTrapProfile(BaseProfile):
         if state.drop_probability > 0.6 and segment != "drop":
             self._was_pre_drop = True
             self._note_patterns("pre_drop_build")
-            return self._pre_drop_build(state)
+            return self._apply_headroom(self._pre_drop_build(state))
 
         # Drop hit (bypass motif/note layers — drops are always full)
         if segment == "drop" and energy > 0.5:
             self._note_patterns("drop_explosion")
             result = self._drop_explosion(state)
             self._was_pre_drop = False
-            return result
+            return result  # drops bypass headroom
 
         self._was_pre_drop = False
+
+        # ─── Motif repetition escalation ──────────────────────────
+        # When a motif has repeated 4+ times, the crowd knows this part.
+        # Escalate to strobe burst on beats for visceral recognition.
+        motif_rep = getattr(state, "motif_repetition", 0)
+        if (
+            motif_rep > 3
+            and state.is_beat
+            and segment not in ("breakdown", "bridge", "intro", "outro")
+        ):
+            self._note_patterns("motif_escalation")
+            commands: dict[int, FixtureCommand] = {}
+            burst = strobe_burst(
+                self._strobes, state, state.timestamp, STROBE_WHITE,
+            )
+            commands.update(burst)
+            active_pars = self._get_active_pars(state)
+            par_cmds = wash_hold(
+                active_pars, state, state.timestamp, BLOOD_RED,
+                intensity=self._headroom_scale(state, 1.0),
+            )
+            commands.update(par_cmds)
+            for f in self._pars:
+                if f.fixture_id not in commands:
+                    commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+            for f in self._led_bars:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+            for f in self._lasers:
+                commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+            return self._apply_headroom(self._merge_commands(commands))
+
+        # ─── Layer count sparse mode ──────────────────────────────
+        # layer_count < 2: single red spotlight only (minimal)
+        layer_count = getattr(state, "layer_count", 0)
+        if (
+            layer_count > 0
+            and layer_count < 2
+            and segment not in ("drop", "breakdown", "bridge", "intro", "outro")
+        ):
+            self._note_patterns("sparse_spotlight")
+            return self._apply_headroom(self._sparse_spotlight(state))
 
         # ─── Note-level pattern (each note = different light) ─────
         if state.notes_per_beat > 0 and segment not in ("breakdown", "bridge", "intro", "outro"):
@@ -203,32 +245,62 @@ class RageTrapProfile(BaseProfile):
                     note_cmds[f.fixture_id] = make_command(f, BLACK, 0.0)
                 for f in self._lasers:
                     note_cmds[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
-                return self._merge_commands(note_cmds)
+                return self._apply_headroom(self._merge_commands(note_cmds))
 
         # ─── Segment-based routing (with headroom awareness) ──────
 
         # Breakdown / bridge
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown_breathe")
-            return self._breakdown_breathe(state)
+            return self._apply_headroom(self._breakdown_breathe(state))
 
         # Intro / outro
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         # Chorus / hook — brighter and wider than verse
         if segment == "chorus":
             self._note_patterns("chorus_reactive")
-            return self._chorus_reactive(state)
+            return self._apply_headroom(self._chorus_reactive(state))
 
         # Vocal calm
         if state.vocal_energy > 0.6:
             self._note_patterns("vocal_calm")
-            return self._vocal_calm(state)
+            return self._apply_headroom(self._vocal_calm(state))
 
         self._note_patterns("verse_reactive")
-        return self._verse_reactive(state)
+        return self._apply_headroom(self._verse_reactive(state))
+
+    # ─── Extended MusicState handlers ─────────────────────────────
+
+    def _sparse_spotlight(self, state: MusicState) -> list[FixtureCommand]:
+        """Single red spotlight when layer_count < 2 (sparse instrumentation).
+
+        Only one par is lit at very low intensity. Everything else dark.
+        Sparse music deserves sparse lighting.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Fixture command list.
+        """
+        commands: dict[int, FixtureCommand] = {}
+
+        par_cmds = spotlight_isolate(
+            self._pars, state, state.timestamp, DEEP_RED,
+            target_index=0, intensity=self._headroom_scale(state, 0.25),
+            dim_others=0.0,
+        )
+        commands.update(par_cmds)
+
+        for f in self._strobes + self._led_bars:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+
+        return self._merge_commands(commands)
 
     # ─── Segment handlers ────────────────────────────────────────
 

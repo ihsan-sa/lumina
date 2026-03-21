@@ -92,6 +92,10 @@ class TheatricalProfile(BaseProfile):
         self._last_segment: str = ""
         self._segment_start_time: float = 0.0
 
+        # Motif-to-color-temperature mapping
+        self._motif_temp_map: dict[int, float] = {}
+        self._next_temp_value: float = 0.0
+
     # --- Motif overrides ---------------------------------------------------
 
     @property
@@ -106,12 +110,55 @@ class TheatricalProfile(BaseProfile):
 
     # --- Main generate -----------------------------------------------------
 
+    def _get_motif_temperature(self, motif_id: int | None) -> float:
+        """Get or assign a color temperature value for a motif.
+
+        Each distinct motif gets its own warm/cool bias (0.0=warm, 1.0=cool).
+        The mapping is built up as new motifs appear.
+
+        Args:
+            motif_id: Current motif identifier (None = no motif).
+
+        Returns:
+            Temperature value 0.0-1.0.
+        """
+        if motif_id is None:
+            return 0.5  # neutral
+        if motif_id not in self._motif_temp_map:
+            self._motif_temp_map[motif_id] = self._next_temp_value
+            # Cycle through distinct temperature values
+            self._next_temp_value = (self._next_temp_value + 0.3) % 1.0
+        return self._motif_temp_map[motif_id]
+
+    def _vocal_layer_intensity(self, state: MusicState) -> float:
+        """Compute spotlight intensity from vocal layer in layer_mask.
+
+        When layer_mask contains a 'vocals' key, use it directly to drive
+        spotlight intensity (the voice IS the dimmer, amplified by layer
+        awareness).  Falls back to vocal_energy.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Vocal-driven intensity 0.0-1.0.
+        """
+        layer_mask = getattr(state, "layer_mask", {})
+        if isinstance(layer_mask, dict) and "vocals" in layer_mask:
+            return max(0.0, min(1.0, layer_mask["vocals"]))
+        return max(0.0, min(1.0, state.vocal_energy))
+
     def generate(self, state: MusicState) -> list[FixtureCommand]:
         """Generate theatrical fixture commands for the current frame.
 
         Decision hierarchy: vocal energy drives intensity, spectral
         centroid drives color temperature, segment drives palette and
         spatial pattern.
+
+        Extended MusicState integration:
+        - layer_mask['vocals'] directly drives spotlight intensity
+        - motif_id maps to distinct color temperature per musical theme
+        - headroom scales final output
 
         Args:
             state: Current audio analysis frame.
@@ -120,6 +167,7 @@ class TheatricalProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Track segment transitions
@@ -130,23 +178,23 @@ class TheatricalProfile(BaseProfile):
         # Segment routing
         if segment == "drop":
             self._note_patterns("drop")
-            return self._drop(state)
+            return self._apply_headroom(self._drop(state))
 
         if segment == "chorus":
             self._note_patterns("chorus")
-            return self._chorus(state)
+            return self._apply_headroom(self._chorus(state))
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         # Default: verse
         self._note_patterns("verse")
-        return self._verse(state)
+        return self._apply_headroom(self._verse(state))
 
     # --- Segment handlers --------------------------------------------------
 
@@ -155,14 +203,22 @@ class TheatricalProfile(BaseProfile):
 
         2-4 pars expanding with vocal energy.  LED bars dim.
         Strobes off.  Laser off.
+        layer_mask['vocals'] drives intensity directly.
+        motif_id shifts color temperature per musical theme.
         """
         commands: dict[int, FixtureCommand] = {}
-        vocal = state.vocal_energy
+        vocal = self._vocal_layer_intensity(state)
 
         # Color temperature driven by spectral centroid
         verse_color = self._color_temperature(
             state.spectral_centroid, VERSE_COOL, VERSE_NEUTRAL,
         )
+
+        # Motif-driven temperature: each musical theme gets its own warmth
+        motif_id = getattr(state, "motif_id", None)
+        motif_temp = self._get_motif_temperature(motif_id)
+        motif_color = lerp_color(VERSE_COOL, VERSE_NEUTRAL, motif_temp)
+        verse_color = lerp_color(verse_color, motif_color, 0.3)
 
         # Sub-bass deepens warm tones
         if state.sub_bass_energy > 0.5:
@@ -172,7 +228,7 @@ class TheatricalProfile(BaseProfile):
         count = max(2, int(vocal * len(self._pars)))
         active_pars = self._pars_lr[:count]
 
-        # Vocal energy IS the intensity
+        # Vocal energy (from layer_mask or vocal_energy) IS the intensity
         vocal_intensity = energy_brightness(vocal, gamma=0.5) * 0.6 + 0.05
 
         par_cmds = wash_hold(
@@ -207,9 +263,10 @@ class TheatricalProfile(BaseProfile):
 
         All pars active.  Breathe overlay on LED bars at 8-bar period.
         Gentle downbeat strobes (tinted warm, rate=60, intensity=80).
+        layer_mask['vocals'] drives intensity directly.
         """
         commands: dict[int, FixtureCommand] = {}
-        vocal = state.vocal_energy
+        vocal = self._vocal_layer_intensity(state)
 
         # Vocal-driven intensity
         vocal_intensity = energy_brightness(vocal, gamma=0.5) * 0.7 + 0.20

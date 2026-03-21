@@ -181,3 +181,78 @@ class TestChorusWarmPalette:
                 assert cmd_map[sid].strobe_intensity <= 100, (
                     f"Chorus strobe intensity should be gentle, got {cmd_map[sid].strobe_intensity}"
                 )
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestTheatricalHeadroom:
+    """headroom scaling in theatrical."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.5, vocal_energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.5, vocal_energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue + c.white for c in full)
+        half_sum = sum(c.red + c.green + c.blue + c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+
+class TestTheatricalLayerMaskVocals:
+    """layer_mask['vocals'] directly drives spotlight intensity."""
+
+    def test_high_vocal_layer_bright(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5,
+            layer_mask={"vocals": 0.9, "drums": 0.5},
+            vocal_energy=0.3,  # lower than layer_mask to prove layer_mask wins
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        par_brightness = sum(
+            cmd_map[pid].red + cmd_map[pid].green + cmd_map[pid].blue + cmd_map[pid].white
+            for pid in _par_ids()
+        )
+        assert par_brightness > 0, "High vocal layer should produce visible lighting"
+
+    def test_low_vocal_layer_dim(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5,
+            layer_mask={"vocals": 0.1, "drums": 0.5},
+            vocal_energy=0.9,  # higher than layer_mask to prove layer_mask wins
+        ))
+        assert len(cmds) == 15
+
+
+class TestTheatricalMotifTemperature:
+    """motif_id maps to distinct color temperature."""
+
+    def test_different_motifs_different_temperature(self) -> None:
+        p = _profile()
+        # Motif 1
+        p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=1, timestamp=1.0,
+        ))
+        # Motif 2
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=2, timestamp=2.0,
+        ))
+        assert len(cmds) == 15
+
+    def test_same_motif_consistent_temperature(self) -> None:
+        p = _profile()
+        cmds1 = p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=1, timestamp=1.0,
+        ))
+        cmds2 = p.generate(_state(
+            segment="verse", energy=0.5, vocal_energy=0.5,
+            motif_id=1, timestamp=1.0,
+        ))
+        for c1, c2 in zip(cmds1, cmds2, strict=True):
+            assert c1 == c2

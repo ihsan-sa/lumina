@@ -136,6 +136,9 @@ class UkBassProfile(BaseProfile):
         self._drop_frame_count: int = 0
         self._was_pre_drop: bool = False
 
+        # Layer count tracking for hard-cut detection
+        self._prev_layer_count: int = 0
+
     @property
     def motif_pattern_preferences(self) -> list[str]:
         """UK bass prefers raw, organic patterns for motifs."""
@@ -205,6 +208,7 @@ class UkBassProfile(BaseProfile):
             One FixtureCommand per fixture.
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         # Track segment transitions
@@ -220,39 +224,147 @@ class UkBassProfile(BaseProfile):
         if segment == "drop":
             self._drop_frame_count += 1
 
+        # Layer count hard-cut: dramatic drop (e.g. 4->1) = single fixture
+        layer_count = getattr(state, "layer_count", 0)
+        layer_dropped = (
+            layer_count > 0
+            and self._prev_layer_count >= 3
+            and layer_count <= 1
+            and segment not in ("intro", "outro", "breakdown", "bridge")
+        )
+        self._prev_layer_count = layer_count if layer_count > 0 else self._prev_layer_count
+
+        if layer_dropped:
+            self._note_patterns("layer_hard_cut")
+            return self._apply_headroom(self._layer_hard_cut(state))
+
+        # notes_per_beat > 4: fast amen-break scatter pattern
+        notes_per_beat = getattr(state, "notes_per_beat", 0)
+        if (
+            notes_per_beat > 4
+            and segment not in ("breakdown", "bridge", "intro", "outro")
+        ):
+            self._note_patterns("amen_scatter")
+            return self._apply_headroom(self._amen_scatter(state))
+
         # Pre-drop build
         if state.drop_probability > 0.5 and segment != "drop":
             self._was_pre_drop = True
             self._note_patterns("build")
-            return self._build(state)
+            return self._apply_headroom(self._build(state))
 
         # Drop
         if segment == "drop" and state.energy > 0.4:
             self._note_patterns("drop")
             result = self._drop(state)
             self._was_pre_drop = False
-            return result
+            return result  # drops bypass headroom
 
         self._was_pre_drop = False
 
         # Breakdown / bridge
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         # Intro / outro
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         # Chorus — wider flicker, more energy
         if segment == "chorus":
             self._note_patterns("verse_groove")
-            return self._verse_groove(state, chorus_boost=True)
+            return self._apply_headroom(self._verse_groove(state, chorus_boost=True))
 
         # Default: verse/groove
         self._note_patterns("verse_groove")
-        return self._verse_groove(state)
+        return self._apply_headroom(self._verse_groove(state))
+
+    # ─── Extended MusicState handlers ─────────────────────────────
+
+    def _amen_scatter(self, state: MusicState) -> list[FixtureCommand]:
+        """Fast amen-break scatter: notes_per_beat > 4 means rapid fills.
+
+        Each note position scatters light to a different random fixture.
+        The high note density creates a chaotic, jittery visual that
+        mirrors the break pattern.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Fixture command list.
+        """
+        commands: dict[int, FixtureCommand] = {}
+
+        # Scatter across all pars at high density, driven by note phase
+        scatter_cmds = random_scatter(
+            self._pars, state, state.timestamp, GRIME_GREEN,
+            density=0.6, intensity=self._headroom_scale(state, 0.8),
+        )
+        commands.update(scatter_cmds)
+
+        # Strobes fire on every note boundary (very active)
+        note_phase = getattr(state, "note_pattern_phase", 0.0)
+        if note_phase < 0.2:  # near note onset
+            for f in self._strobes:
+                jitter = _jitter_offset(f.fixture_id, state.timestamp)
+                rate = 200 + int(jitter * 800)
+                rate = max(160, min(240, rate))
+                commands[f.fixture_id] = make_command(
+                    f, HARSH_WHITE, strobe_rate=rate, strobe_intensity=200,
+                )
+        else:
+            for f in self._strobes:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # LED bars: flicker at high jitter
+        bar_cmds = flicker(
+            self._led_bars, state, state.timestamp, SODIUM_AMBER,
+            intensity=self._headroom_scale(state, 0.4), jitter=0.6,
+        )
+        commands.update(bar_cmds)
+
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+
+        return self._merge_commands(commands)
+
+    def _layer_hard_cut(self, state: MusicState) -> list[FixtureCommand]:
+        """Hard cut to single fixture when layers drop dramatically (4->1).
+
+        The sudden loss of layers creates a dramatic visual pause: only
+        one par remains lit, everything else cuts to black instantly.
+
+        Args:
+            state: Current music state.
+
+        Returns:
+            Fixture command list.
+        """
+        commands: dict[int, FixtureCommand] = {}
+
+        # Single par at moderate intensity
+        if self._pars:
+            target = self._pars[0]
+            commands[target.fixture_id] = make_command(
+                target, SODIUM_AMBER,
+                intensity=self._headroom_scale(state, 0.35),
+            )
+
+        # All other pars off
+        for f in self._pars:
+            if f.fixture_id not in commands:
+                commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+
+        # Everything else off
+        for f in self._strobes + self._led_bars:
+            commands[f.fixture_id] = make_command(f, BLACK, 0.0)
+        for f in self._lasers:
+            commands[f.fixture_id] = make_command(f, BLACK, special=_LASER_OFF)
+
+        return self._merge_commands(commands)
 
     # ─── Segment handlers ────────────────────────────────────────
 

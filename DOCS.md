@@ -1,6 +1,6 @@
 # LUMINA Technical Documentation & Agent Context
 
-Last updated: 2026-03-20
+Last updated: 2026-03-21 (technical debt fixes)
 
 This is the single source of truth for agent-to-agent context transfer. Read this before
 modifying any part of the codebase. For design philosophy and project-level rules, see `CLAUDE.md`.
@@ -799,6 +799,85 @@ the network manager.
 
 ---
 
+## 11c. Show Recording (`lumina/recording/`)
+
+Implements F4 from the next-gen plan: record a generated light show to a compact binary file and
+replay it exactly without re-running audio analysis.
+
+### File Format (.lrec)
+
+Little-endian binary, designed for O(1) random access.
+
+```
+Header (42 bytes):
+  magic:         4 bytes   "LREC"
+  version:       uint8     (1)
+  audio_hash:    32 bytes  SHA256 of the associated audio file
+  fps:           uint8     nominal frame rate (e.g. 60)
+  fixture_count: uint8     commands per frame
+  duration_ms:   uint32    timestamp of last frame in ms
+  frame_count:   uint32    total number of frames
+
+Payload (frame_count x (4 + fixture_count x 8) bytes):
+  Per frame:
+    timestamp_ms: uint32
+    commands:     fixture_count x 8 bytes (same layout as UDP fixture payload)
+```
+
+File size: 60fps x 15 fixtures x 8 bytes + 4 bytes timestamp = ~7.2 KB/s = ~2.2 MB per 5-min song.
+
+Optional `.lrec.zst` extension enables zstd compression (requires `zstandard` package, which is
+NOT a mandatory dependency — the module gracefully falls back to uncompressed if unavailable).
+
+### API
+
+```python
+from lumina.recording import ShowRecorder, ShowPlayer, hash_audio_file
+
+# Recording
+audio_hash = hash_audio_file(audio_path)          # SHA256 of audio file
+recorder = ShowRecorder(audio_hash, fps=60, fixture_count=15)
+for timestamp_ms, commands in my_engine():
+    recorder.record_frame(timestamp_ms, commands)
+recorder.save(Path("show.lrec"))
+
+# Playback
+player = ShowPlayer(Path("show.lrec"))
+assert player.verify_audio(audio_path)            # Verify correct audio
+for timestamp_ms, commands in player.frames():    # Sequential
+    send_udp(commands)
+
+# Random access
+ts = player.seek(45000)                           # Binary search, returns nearest ts
+idx = player.seek_frame_index(45000)              # Returns frame index
+ts, commands = player.frame_at(idx)               # O(1) frame access
+```
+
+### Key Design Decisions
+
+- **Frame padding**: If `record_frame` receives fewer commands than `fixture_count`, missing slots
+  are zero-padded (logged as WARNING). Extra commands are silently truncated.
+- **Seek algorithm**: Binary search over frame timestamps (O(log n)). Returns the nearest frame
+  when the target falls between two frames.
+- **Memory model**: `ShowPlayer` loads the entire payload into memory on construction (~2.2 MB for
+  a 5-min show). No streaming. All `frame_at` calls are O(1) index arithmetic into the byte slice.
+- **Audio verification**: `verify_audio(path)` recomputes SHA256 and compares against the stored
+  hash. Used to detect accidental audio/show file mismatches.
+- **Atomic save**: `ShowRecorder.save()` assembles the full file in memory then writes it in one
+  `Path.write_bytes()` call. No partial writes.
+
+### Module Layout
+
+```
+lumina/recording/
+  __init__.py         Exports: ShowRecorder, ShowPlayer, hash_audio_file
+  recorder.py         ShowRecorder, hash_audio_file, _compress_zstd/_decompress_zstd
+  player.py           ShowPlayer
+tests/test_recording.py  47 tests covering all paths
+```
+
+---
+
 ## 12. Simulator
 
 ### Architecture
@@ -1003,6 +1082,7 @@ All tests in `tests/`. Uses pytest with pytest-asyncio.
 | `test_network_manager.py` | UDP network manager lifecycle | `lumina/control/network.py` |
 | `test_app.py` | App integration tests | `lumina/app.py` |
 | `test_server.py` | WebSocket server tests | `lumina/web/server.py` |
+| `test_recording.py` | ShowRecorder/ShowPlayer roundtrip, seek, audio verify, edge cases | `lumina/recording/` |
 
 ### Known Test Failures
 
@@ -1146,7 +1226,7 @@ See `docs/next-gen-plan.md` for the full critical assessment and feature roadmap
 
 1. **W1**: Live mode has no source separation (degrades all stem-dependent analysis)
 2. **W2**: No latency measurement or compensation
-3. **W3**: Extended MusicState fields (7) are computed but ignored by most profiles
+3. **W3**: ~~Extended MusicState fields (7) are computed but ignored by most profiles~~ **RESOLVED (F5 implemented)**
 4. **W4**: No photosensitive safety limiter (strobe frequency/duty cycle unbound)
 5. **W5**: File mode blocks until full analysis completes (bad UX)
 6. **W6**: No show recording/playback
@@ -1156,3 +1236,13 @@ See `docs/next-gen-plan.md` for the full critical assessment and feature roadmap
 10. **W10**: ML pipeline exists but has zero training data
 
 **Priority order:** F1 (safety) > F5 (use extended MusicState) > F4 (recording) > F2 (mobile UI) > F3 (progressive analysis) > F7 (streaming separation) > F8 (latency)
+
+**Technical debt resolved (2026-03-21):**
+
+| Item | Fix |
+|---|---|
+| NetworkManager not used in app.py | `LuminaApp` now creates `NetworkManager` instead of raw `socket.socket`. All UDP output goes through `NetworkManager.send_commands()` which handles async sending, chunking, latency tracking, and stats. |
+| No graceful shutdown | Added `_shutdown_event` (asyncio.Event) + signal handlers for SIGINT/SIGTERM. All loops (`_output_loop`, `_idle_loop`, `_live_process_frames`) check the event. Cleanup sequence: stop audio -> stop NetworkManager -> stop WebSocket server. |
+| No error recovery in live mode | `_run_live_mode` refactored into `_live_capture_loop` with retry logic (up to 5 attempts, 2s delay). Audio callback wrapped in try/except. `_live_process_frames` extracted for clean separation. |
+| Hardcoded fixture layout | `FixtureMap` now has `load_from_json(path)` and `save_to_json(path)` methods. Default layout exported to `lumina/config/default_fixtures.json`. Hardcoded layout remains as fallback when JSON is missing or invalid. |
+| F5: Extended MusicState not used by profiles | All 9 profiles now integrate the 7 extended MusicState fields (layer_count, layer_mask, motif_id, motif_repetition, notes_per_beat, note_pattern_phase, headroom). Base class provides `_apply_headroom()`, `_active_fixture_count()`, and `_store_headroom()`. Each profile has genre-specific behavior: rage_trap escalates strobes on motif repetition + single spotlight on sparse layers; psych_rnb adjusts breathe speed from notes_per_beat + rotates palette on motif changes; french_melodic boosts chase speed from notes_per_beat; french_hard increases strobe intensity on repeated motifs; euro_alt goes ultra-minimal on sparse layers + shifts white temperature on motif changes; theatrical uses layer_mask vocals directly for spotlight intensity + assigns color temperature per motif_id; festival_edm boosts build ramp from layer_count + resets color cycle on new motifs; uk_bass triggers scatter pattern on high notes_per_beat + hard-cuts to single fixture on layer drops; generic uses layer_count for fixture selection. 52 new tests added (232 total profile tests, 998 full suite). |

@@ -185,3 +185,70 @@ class TestStrobeOnBeat:
         rate, intensity = p._strobe_on_beat(state)
         assert rate == 0
         assert intensity == 0
+
+
+# ─── Extended MusicState helpers ─────────────────────────────────────
+
+
+class TestApplyHeadroom:
+    def test_headroom_scales_rgb(self) -> None:
+        p = _make_profile()
+        p._store_headroom(_make_state(headroom=0.5))
+        cmds = [FixtureCommand(fixture_id=1, red=200, green=100, blue=50, white=80)]
+        result = p._apply_headroom(cmds)
+        assert result[0].red == 100
+        assert result[0].green == 50
+        assert result[0].blue == 25
+        assert result[0].white == 40
+
+    def test_headroom_one_passthrough(self) -> None:
+        p = _make_profile()
+        p._store_headroom(_make_state(headroom=1.0))
+        cmds = [FixtureCommand(fixture_id=1, red=200, green=100, blue=50)]
+        result = p._apply_headroom(cmds)
+        assert result[0].red == 200
+        assert result[0].green == 100
+
+    def test_headroom_preserves_strobe(self) -> None:
+        """Strobe rate and intensity should NOT be scaled by headroom."""
+        p = _make_profile()
+        p._store_headroom(_make_state(headroom=0.5))
+        cmds = [FixtureCommand(fixture_id=1, red=200, strobe_rate=180, strobe_intensity=220)]
+        result = p._apply_headroom(cmds)
+        assert result[0].strobe_rate == 180
+        assert result[0].strobe_intensity == 220
+
+    def test_headroom_preserves_special(self) -> None:
+        p = _make_profile()
+        p._store_headroom(_make_state(headroom=0.5))
+        cmds = [FixtureCommand(fixture_id=1, red=200, special=128)]
+        result = p._apply_headroom(cmds)
+        assert result[0].special == 128
+
+
+class TestActiveFixtureCount:
+    def test_layer_count_zero_returns_all(self) -> None:
+        p = _make_profile()
+        state = _make_state(layer_count=0, energy=0.5)
+        from lumina.lighting.fixture_map import FixtureMap, FixtureType
+        fm = FixtureMap()
+        total_pars = len(fm.by_type(FixtureType.PAR))
+        assert p._active_fixture_count(state) == total_pars
+
+    def test_layer_count_one_returns_few(self) -> None:
+        p = _make_profile()
+        state = _make_state(layer_count=1, energy=0.3)
+        from lumina.lighting.fixture_map import FixtureMap, FixtureType
+        fm = FixtureMap()
+        total_pars = len(fm.by_type(FixtureType.PAR))
+        count = p._active_fixture_count(state, total_pars)
+        assert count < total_pars
+
+    def test_layer_count_four_returns_all(self) -> None:
+        p = _make_profile()
+        state = _make_state(layer_count=4, energy=0.5)
+        from lumina.lighting.fixture_map import FixtureMap, FixtureType
+        fm = FixtureMap()
+        total_pars = len(fm.by_type(FixtureType.PAR))
+        count = p._active_fixture_count(state, total_pars)
+        assert count == total_pars

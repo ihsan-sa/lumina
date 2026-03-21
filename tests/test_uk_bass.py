@@ -209,3 +209,78 @@ class TestMotifPatternPreferences:
         palette = p.motif_color_palette
         assert isinstance(palette, list)
         assert len(palette) > 0
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestUkBassHeadroom:
+    """headroom scaling in uk_bass."""
+
+    def test_headroom_half_reduces_brightness(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.6, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.6, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue + c.white for c in full)
+        half_sum = sum(c.red + c.green + c.blue + c.white for c in half)
+        if full_sum > 0:
+            assert half_sum < full_sum
+
+    def test_drop_bypasses_headroom(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(segment="drop", energy=0.9, headroom=0.3))
+        total = sum(c.red + c.green + c.blue + c.white for c in cmds)
+        assert total > 200
+
+
+class TestUkBassAmenScatter:
+    """notes_per_beat > 4 activates scatter pattern."""
+
+    def test_high_notes_per_beat_scatter(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.7, notes_per_beat=6,
+            note_pattern_phase=0.1,
+        ))
+        assert len(cmds) == 15
+        cmd_map = {c.fixture_id: c for c in cmds}
+        # Should have some green from grime_green scatter
+        par_ids = {f.fixture_id for f in FixtureMap().by_type(FixtureType.PAR)}
+        any_green = any(cmd_map[pid].green > 0 for pid in par_ids)
+        assert any_green, "Amen scatter should use grime green on pars"
+
+    def test_normal_notes_no_scatter(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, notes_per_beat=2,
+        ))
+        assert len(cmds) == 15
+
+
+class TestUkBassLayerHardCut:
+    """layer_count drop (4->1) triggers hard cut to single fixture."""
+
+    def test_layer_drop_single_fixture(self) -> None:
+        p = _profile()
+        # First frame: establish high layer count
+        p.generate(_state(
+            segment="verse", energy=0.7, layer_count=4, timestamp=1.0,
+        ))
+        # Second frame: dramatic layer drop
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, layer_count=1, timestamp=1.1,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        par_ids = {f.fixture_id for f in FixtureMap().by_type(FixtureType.PAR)}
+        lit = [pid for pid in par_ids if cmd_map[pid].red > 0 or cmd_map[pid].green > 0]
+        assert len(lit) <= 1, f"Hard cut should light at most 1 par, got {len(lit)}"
+
+    def test_no_hard_cut_without_previous_high(self) -> None:
+        """If previous layer_count was never high, no hard cut."""
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, layer_count=1,
+        ))
+        # Should still produce valid output (normal verse, not hard cut)
+        assert len(cmds) == 15

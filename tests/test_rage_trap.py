@@ -277,3 +277,87 @@ class TestIntroOutro:
         cmd_map = {c.fixture_id: c for c in cmds}
         lit = [pid for pid in _par_ids() if cmd_map[pid].red > 0]
         assert len(lit) <= 1
+
+
+# ─── Extended MusicState integration tests ──────────────────────────
+
+
+class TestHeadroomScaling:
+    """headroom < 1.0 reduces output intensity."""
+
+    def test_headroom_half_reduces_verse_intensity(self) -> None:
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="verse", energy=0.7, headroom=1.0))
+        half = p2.generate(_state(segment="verse", energy=0.7, headroom=0.5))
+        full_sum = sum(c.red + c.green + c.blue for c in full)
+        half_sum = sum(c.red + c.green + c.blue for c in half)
+        # Half headroom should produce noticeably less total brightness
+        if full_sum > 0:
+            assert half_sum < full_sum, (
+                f"headroom=0.5 ({half_sum}) should be less than headroom=1.0 ({full_sum})"
+            )
+
+    def test_headroom_does_not_affect_drop(self) -> None:
+        """Drops bypass headroom in rage trap."""
+        p1 = _profile()
+        p2 = _profile()
+        full = p1.generate(_state(segment="drop", energy=0.9, headroom=1.0,
+                                  is_beat=True, beat_phase=0.1))
+        half = p2.generate(_state(segment="drop", energy=0.9, headroom=0.5,
+                                  is_beat=True, beat_phase=0.1))
+        full_sum = sum(c.red for c in full)
+        half_sum = sum(c.red for c in half)
+        # Drop should be identical regardless of headroom
+        assert full_sum == half_sum
+
+
+class TestMotifRepetitionEscalation:
+    """motif_repetition > 3 escalates to strobe burst on beats."""
+
+    def test_high_motif_repetition_fires_strobes(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.7, is_beat=True,
+            motif_repetition=5, motif_id=1,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        any_strobe = any(
+            cmd_map[sid].strobe_rate > 0 or cmd_map[sid].strobe_intensity > 0
+            for sid in _strobe_ids()
+        )
+        assert any_strobe, "Strobes should fire when motif_repetition > 3 on beat"
+
+    def test_low_motif_repetition_no_escalation(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, is_beat=True,
+            motif_repetition=1, motif_id=1,
+        ))
+        # Should follow normal verse behavior, not motif escalation
+        assert len(cmds) == 15
+
+
+class TestLayerCountSparse:
+    """layer_count < 2 produces single red spotlight."""
+
+    def test_sparse_single_fixture(self) -> None:
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.5, layer_count=1,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        lit_pars = [pid for pid in _par_ids() if cmd_map[pid].red > 0]
+        assert len(lit_pars) <= 1, (
+            f"Only 1 par should be lit when layer_count=1, got {len(lit_pars)}"
+        )
+
+    def test_layer_count_zero_no_sparse_override(self) -> None:
+        """layer_count=0 means no layer data — don't trigger sparse mode."""
+        p = _profile()
+        cmds = p.generate(_state(
+            segment="verse", energy=0.7, layer_count=0, is_beat=True,
+        ))
+        cmd_map = {c.fixture_id: c for c in cmds}
+        lit_pars = [pid for pid in _par_ids() if cmd_map[pid].red > 0]
+        assert len(lit_pars) >= 1

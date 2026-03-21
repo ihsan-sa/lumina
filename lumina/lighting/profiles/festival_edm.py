@@ -98,6 +98,10 @@ class FestivalEdmProfile(BaseProfile):
         self._drop_frame: int = 0
         self._bump = BumpTracker(decay_rate=7.0)  # 150ms punchy decay
 
+        # Motif repetition tracking: reset groove visual on new motif
+        self._last_motif_id: int | None = None
+        self._groove_color_offset: float = 0.0
+
     def generate(self, state: MusicState) -> list[FixtureCommand]:
         """Generate festival EDM fixture commands.
 
@@ -108,6 +112,7 @@ class FestivalEdmProfile(BaseProfile):
             One FixtureCommand per fixture (15 total).
         """
         self._begin_debug_frame()
+        self._store_headroom(state)
         segment = state.segment
 
         if segment != self._last_segment:
@@ -126,33 +131,34 @@ class FestivalEdmProfile(BaseProfile):
                 else self._build_start_time
             )
             self._note_patterns("build")
-            return self._build(state)
+            return self._apply_headroom(self._build(state))
 
         if state.drop_probability <= 0.4 and segment != "drop":
             self._build_start_time = -1.0
 
         if segment == "drop":
             self._note_patterns("drop")
-            return self._drop(state)
+            return self._drop(state)  # drops bypass headroom
 
         if segment in ("breakdown", "bridge"):
             self._note_patterns("breakdown")
-            return self._breakdown(state)
+            return self._apply_headroom(self._breakdown(state))
 
         if segment in ("intro", "outro"):
             self._note_patterns("intro_outro")
-            return self._intro_outro(state)
+            return self._apply_headroom(self._intro_outro(state))
 
         self._note_patterns("groove")
-        return self._groove(state)
+        return self._apply_headroom(self._groove(state))
 
     # ─── Segment handlers ──────────────────────────────────────────
 
     def _build(self, state: MusicState) -> list[FixtureCommand]:
-        """Build-up: chase_lr (slow→fast) + stutter on strobe + converge.
+        """Build-up: chase_lr (slow->fast) + stutter on strobe + converge.
 
-        Colors shift blue→cyan→white. Fixture count escalates. Strobe
+        Colors shift blue->cyan->white. Fixture count escalates. Strobe
         stutter accelerates from 8th notes to 32nd notes over build.
+        layer_count boosts the ramp (more layers = closer to drop).
         """
         commands: dict[int, FixtureCommand] = {}
 
@@ -161,7 +167,14 @@ class FestivalEdmProfile(BaseProfile):
         dt = max(0.0, state.timestamp - self._build_start_time)
         ramp = min(1.0, dt / (_BUILD_BARS_SHORT * bar_duration))
 
-        # Color: blue → cyan → white
+        # Layer count boosts build intensity: more layers = closer to exploding
+        layer_count = getattr(state, "layer_count", 0)
+        if layer_count >= 3:
+            ramp = min(1.0, ramp + 0.15)  # jump ahead in the build
+        elif layer_count >= 4:
+            ramp = min(1.0, ramp + 0.25)
+
+        # Color: blue -> cyan -> white
         color = lerp_color(ICE_BLUE, HOT_WHITE, ramp)
 
         # Fixture escalation: start with few pars, expand to all
@@ -300,15 +313,26 @@ class FestivalEdmProfile(BaseProfile):
         return self._merge_commands(commands)
 
     def _groove(self, state: MusicState) -> list[FixtureCommand]:
-        """Groove: alternate on pars + chase on overhead bars."""
+        """Groove: alternate on pars + chase on overhead bars.
+
+        motif_repetition resets: when a new motif starts (repetition drops
+        to 0-1), shift the color cycle for a fresh visual.
+        """
         commands: dict[int, FixtureCommand] = {}
+
+        # Track motif changes: reset groove visual on new motif/section
+        motif_id = getattr(state, "motif_id", None)
+        if motif_id is not None and motif_id != self._last_motif_id:
+            # New motif = fresh look: offset the color cycle
+            self._groove_color_offset = (self._groove_color_offset + 0.25) % 1.0
+            self._last_motif_id = motif_id
 
         bpm = max(60.0, state.bpm)
         bar_duration = 60.0 / bpm * 4.0
 
-        # 4-bar color cycle
+        # 4-bar color cycle (offset by motif changes for fresh visuals)
         bar_index = state.timestamp / bar_duration
-        cycle_pos = (bar_index / 4.0) % 1.0
+        cycle_pos = (bar_index / 4.0 + self._groove_color_offset) % 1.0
         n_colors = len(_GROOVE_COLORS)
         color_idx = int(cycle_pos * n_colors) % n_colors
         next_idx = (color_idx + 1) % n_colors
