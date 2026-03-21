@@ -1135,3 +1135,24 @@ make_command(fixture, color, intensity=1.0, strobe_rate=0, strobe_intensity=0, s
 - All extended fields (7) have safe defaults (0, None, 1.0) for backward compat
 - `energy` must be declared as local variable in each profile method that uses it
 - `_segment_start_time` (not `_verse_start_time`) in profiles -- reset on any segment change
+
+---
+
+## 19. Next-Gen Roadmap
+
+See `docs/next-gen-plan.md` for the full critical assessment and feature roadmap.
+
+**Key architectural weaknesses identified (2026-03-21):**
+
+1. **W1**: Live mode has no source separation (degrades all stem-dependent analysis)
+2. **W2**: No latency measurement or compensation
+3. **W3**: Extended MusicState fields (7) are computed but ignored by most profiles
+4. **W4**: No photosensitive safety limiter (strobe frequency/duty cycle unbound)
+5. **W5**: File mode blocks until full analysis completes (bad UX)
+6. **W6**: No show recording/playback
+7. **W7**: No mobile party UI (only 3D simulator)
+8. **W8**: No multi-song energy arc (each song independent)
+9. **W9**: No fixture zones (entire room treated uniformly)
+10. **W10**: ML pipeline exists but has zero training data
+
+**Priority order:** F1 (safety) > F5 (use extended MusicState) > F4 (recording) > F2 (mobile UI) > F3 (progressive analysis) > F7 (streaming separation) > F8 (latency)
